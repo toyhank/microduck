@@ -1,0 +1,38 @@
+# Virtual environments
+venv/
+.venv/
+*/.venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Large binaries and wheels
+*.whl
+*.tar.gz
+*.zip
+
+# Training logs and checkpoints (keep ONNX models, ignore heavy pt/tfevents)
+logs/
+**/logs/
+**/*.tfevents*
+**/*.pt
+**/videos/
+
+# Backup git folders
+.git_sub/
+**/.git_sub/
+
+# Scratch large files
+scratch/*.whl
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
