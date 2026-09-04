@@ -47,7 +47,7 @@ def get_yaw_from_quat(quat):
 def main():
     print("=" * 60)
     print("   🦆 Microduck CV Soccer Simulation ⚽")
-    print("   小黄鸭自动视觉寻球、对准球门、抬腿射门仿真")
+    print("   Autonomous Ball Tracking, Goal Aiming, and Kicking Simulation")
     print("=" * 60)
 
     try:
@@ -126,7 +126,7 @@ def main():
                 state = 'CELEBRATE'
                 celebrate_timer = 5.0
                 print("\n" + "🎉" * 20)
-                print("   ⚽⚽⚽ GOOOOOOAL! 进球啦！小黄鸭破门成功！⚽⚽⚽")
+                print("   ⚽⚽⚽ GOOOOOOAL! Microduck Scored into the Goal! ⚽⚽⚽")
                 print("🎉" * 20 + "\n")
 
             # ==========================================

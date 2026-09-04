@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Microduck Onboard Autonomous Soccer Script (真机单机运行版本)
-运行在小黄鸭内部的 Rockchip RK3566 开发板上，无需外部电脑！
+Microduck Onboard Autonomous Soccer Script (Standalone Real-Robot Execution)
+Runs directly on the robot's onboard Rockchip RK3566 Linux SBC without an external PC.
 
-原理:
-1. 通过 OpenCV 打开板载头部摄像头 (/dev/video0)
-2. 识别橙红色足球与蓝色球门，计算偏航误差
-3. 通过本地 Unix Domain Socket (/run/robotd.sock) 发送 JSON-RPC 2.0 指令
-4. 接近足球后自动对齐球门并下发 kick_right 抬腿射门！
+Pipeline:
+1. Open the onboard front-facing camera (/dev/video0) via OpenCV.
+2. Detect the orange/red soccer ball and blue goal using HSV color segmentation.
+3. Compute the heading error relative to the camera center (320x240).
+4. Send JSON-RPC 2.0 motion commands to the local Unix Domain Socket (/run/robotd.sock).
+5. When the ball is in front of the foot, align with the goal and trigger kick_right!
 """
 
 import socket
@@ -21,6 +22,8 @@ import numpy as np
 ROBOT_SOCKET = "/run/robotd.sock"
 
 class DuckClient:
+    """Client for communicating with the onboard robotd daemon via Unix Domain Socket."""
+
     def __init__(self, sock_path=ROBOT_SOCKET):
         self.sock_path = sock_path
         self.sock = None
@@ -36,6 +39,7 @@ class DuckClient:
             self.sock = None
 
     def call(self, method, params=None):
+        """Send a JSON-RPC 2.0 request over the Unix socket."""
         if self.sock is None:
             self.connect()
             if self.sock is None:
@@ -54,42 +58,42 @@ class DuckClient:
             self.sock = None
 
     def move(self, vx=0.0, vy=0.0, vtheta=0.0):
-        """发送行走速度指令 (m/s, rad/s)"""
+        """Send velocity command (vx: m/s, vy: m/s, vtheta: rad/s)."""
         self.call("robot.move", {"vx": float(vx), "vy": float(vy), "vtheta": float(vtheta)})
 
     def stop(self):
-        """停步稳立"""
+        """Stop locomotion and stand firmly."""
         self.call("robot.stop")
 
     def kick(self, foot="right"):
-        """执行踢球动作 (kick_right 或 kick_left)"""
+        """Trigger a dynamic kicking skill ('kick_right' or 'kick_left')."""
         skill_name = "kick_right" if foot == "right" else "kick_left"
         self.call("robot.do", {"skill": skill_name})
 
     def quack(self, tag="happy"):
-        """叫一声庆祝 (可选语音功能)"""
+        """Play a voice sound effect for celebration."""
         self.call("robot.sound", {"tag": tag})
 
 def main():
-    print("=" * 50)
-    print("🦆 Microduck 真机机载自主寻球踢球系统启动 ⚽")
-    print("=" * 50)
+    print("=" * 55)
+    print("🦆 Microduck Onboard Autonomous Soccer System ⚽")
+    print("=" * 55)
 
     duck = DuckClient()
 
-    # 打开真机板载摄像头 (一般为 /dev/video0)
+    # Open the onboard camera (/dev/video0)
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
 
     if not cap.isOpened():
-        print("[Error] 无法打开真机摄像头 /dev/video0，请检查设备权限或 mediad 是否独占！")
+        print("[Error] Failed to open /dev/video0. Check permissions or camera daemon exclusivity.")
         return
 
     state = "SEARCH_BALL"
     kick_cooldown_end = 0
 
-    print("[Ready] 视觉主循环开始，等待小黄鸭自动巡球...")
+    print("[Ready] Perception loop running. Searching for the soccer ball...")
 
     try:
         while True:
@@ -100,7 +104,7 @@ def main():
 
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-            # 1. 橙红色足球检测 (真机可根据实际房间光照微调 H: 5~25, S: 100~255, V: 70~255)
+            # 1. Orange/Red soccer ball detection (HSV: H: 5-25, S: 100-255, V: 70-255)
             lower_ball = np.array([5, 100, 70])
             upper_ball = np.array([25, 255, 255])
             mask_ball = cv2.inRange(hsv, lower_ball, upper_ball)
@@ -113,20 +117,20 @@ def main():
             if cnts_ball:
                 c_ball = max(cnts_ball, key=cv2.contourArea)
                 area = cv2.contourArea(c_ball)
-                if area > 40:  # 滤除噪点
+                if area > 40:  # Noise filtering
                     M = cv2.moments(c_ball)
                     if M["m00"] != 0:
                         ball_cx = int(M["m10"] / M["m00"])
                         ball_area = area
                         ball_found = True
 
-            # 2. 状态机控制
+            # 2. State Machine Control
             current_time = time.time()
 
-            # 踢球后的保护与庆祝冷却时间
+            # Post-kick cooldown and celebration
             if state == "KICKING":
                 if current_time >= kick_cooldown_end:
-                    print("🎉 射门完成！小黄鸭欢叫庆祝！")
+                    print("🎉 Kick completed! Celebrating victory!")
                     duck.quack("happy")
                     state = "SEARCH_BALL"
                 time.sleep(0.05)
@@ -134,43 +138,43 @@ def main():
 
             if state == "SEARCH_BALL":
                 if ball_found:
-                    print(f"[State] 发现足球 (面积: {ball_area:.0f})，开始逼近...")
+                    print(f"[State] Ball spotted (area: {ball_area:.0f})! Navigating towards ball...")
                     state = "APPROACH_BALL"
                 else:
-                    # 原地慢速旋转扫视寻找足球
+                    # Spin slowly in place to scan surroundings
                     duck.move(vx=0.0, vy=0.0, vtheta=0.35)
 
             elif state == "APPROACH_BALL":
                 if ball_found:
-                    err_x = 160 - ball_cx  # 中心偏移 (320 宽)
+                    err_x = 160 - ball_cx  # Center offset (width 320)
                     cmd_vtheta = float(np.clip(err_x * 0.005, -0.5, 0.5))
 
-                    # 距离判定：真机上用轮廓面积估算距离
-                    if ball_area > 3500:  # 球已经在脚边极近处
-                        print(f"[State] 已经到达足球面前 (面积: {ball_area:.0f})！刹车站稳...")
+                    # Distance estimation using contour area
+                    if ball_area > 3500:  # Reached close proximity in front of foot
+                        print(f"[State] Arrived at ball (area: {ball_area:.0f})! Braking to stabilize...")
                         duck.stop()
-                        time.sleep(0.6)  # 站稳 0.6 秒以消除运动惯性
+                        time.sleep(0.6)  # Pause for 0.6s to eliminate residual inertia
 
-                        print("⚡ 抬右腿射门！GOOOOOAL！")
+                        print("⚡ Executing RIGHT-FOOT KICK! GOOOOOAL!")
                         duck.kick("right")
                         state = "KICKING"
                         kick_cooldown_end = current_time + 3.0
                     elif ball_area > 1500:
-                        # 接近时减速，精细对齐
+                        # Decelerate near ball for precision alignment
                         duck.move(vx=0.15, vy=0.0, vtheta=cmd_vtheta)
                     else:
-                        # 正常巡航快步前进
+                        # Cruise forward smoothly
                         duck.move(vx=0.30, vy=0.0, vtheta=cmd_vtheta)
                 else:
-                    # 偶尔跟丢，慢速前移或重新搜索
+                    # Temporarily lost ball, slow drift forward or re-scan
                     duck.move(vx=0.10, vy=0.0, vtheta=0.0)
                     time.sleep(0.2)
                     state = "SEARCH_BALL"
 
-            time.sleep(0.08)  # ~12Hz 视觉控制频率
+            time.sleep(0.08)  # ~12Hz perception and control rate
 
     except KeyboardInterrupt:
-        print("\n用户中断，小黄鸭安全停机...")
+        print("\nInterrupted by user. Safely stopping Microduck...")
         duck.stop()
     finally:
         cap.release()
