@@ -17,6 +17,15 @@ __pycache__/
 *.tar.gz
 *.zip
 
+# Presentations and office files
+*.pptx
+*.ppt
+*.pdf
+
+# Local archives and scratch files
+archive/
+scratch/
+
 # Training logs and checkpoints (keep ONNX models, ignore heavy pt/tfevents)
 logs/
 **/logs/
@@ -27,9 +36,6 @@ logs/
 # Backup git folders
 .git_sub/
 **/.git_sub/
-
-# Scratch large files
-scratch/*.whl
 
 # OS / IDE
 .DS_Store
