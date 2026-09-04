@@ -51,21 +51,22 @@ flowchart TD
     subgraph BRAIN ["2. 决策与有限状态机 (严格模式)"]
         Depth & GoalBearing --> FSM{"SoccerStateMachine"}
         FSM -->|未见足球| S1["SEARCH_BALL: 原地慢速扫描"]
-        FSM -->|锁定足球| S2["APPROACH_BALL: 平滑减速视觉伺服逼近"]
-        FSM -->|距离 <= 0.18m| S3["ALIGN_KICK: 瞄准球门并站稳"]
-        FSM -->|对准完成| S4["KICK: 触发 ball_kick_right (0.5s 窗口)"]
-        FSM -->|踢球动作结束| S5["GOAL_CHECK: 观察足球轨迹"]
-        S5 -->|进球判定成功| S6["CELEBRATE: 点头欢庆动作"]
+        FSM -->|锁定足球| S2["APPROACH_BALL: 全向视觉伺服与漂移补偿逼近"]
+        FSM -->|cy >= 230 (盲区)| S3["TERMINAL_APPROACH: 终末 0.26m 盲进打击步"]
+        FSM -->|盲进步完成| S4["ALIGN_KICK: 站立姿态消除惯性"]
+        FSM -->|站立稳固| S5["KICK: 触发 ball_kick_right 爆发踢球 (0.5s 窗口)"]
+        FSM -->|踢球动作结束| S6["GOAL_CHECK: 观察足球轨迹与补射判定"]
+        S6 -->|进球判定成功| S7["CELEBRATE: 点头欢庆动作"]
     end
 
     subgraph ACT ["3. 策略执行层 (50Hz 低通滤波)"]
-        S1 & S2 --> WalkPol["行走策略 alpha_walking.onnx (Scale 0.9, Lowpass 0.7/0.5)"]
-        S4 --> KickPol["踢球策略 ball_kick_right.onnx (Scale 1.0, 0.5s 窗口)"]
-        S6 --> StandPol["站立策略 alpha_stand.onnx (头部韵律点头)"]
+        S1 & S2 & S3 --> WalkPol["行走策略 alpha_walking.onnx (Scale 0.9, Lowpass 0.7/0.5)"]
+        S4 & S6 & S7 --> StandPol["站立策略 alpha_stand.onnx (Scale 1.0)"]
+        S5 --> KickPol["踢球策略 ball_kick_right.onnx (Scale 1.0, 0.5s 窗口)"]
     end
 
     subgraph EVAL ["4. 独立评估套件 (不干涉控制)"]
-        MuJoCo["MuJoCo 物理引擎"] -. 真值数据 .-> Eval["SoccerEvaluator (统计到球率、触球率、进球率)"]
+        MuJoCo["MuJoCo 物理引擎"] -. 真值数据 .-> Eval["SoccerEvaluator (统计触球判定、冲量传递、进球率)"]
     end
 ```
 
@@ -73,13 +74,16 @@ flowchart TD
 
 ## 🎯 状态机详细规范 (FSM Details)
 
+由于机载前向相机在近距离时存在“鸭嘴盲区”（距机体 $Z \le 0.35\text{ m}$ 的足球会滑出视野下方），本方案采用 RoboCup 标准的双阶段闭环+开环冲刺机制：
+
 | 状态 (State) | 感知输入条件 | 运动控制逻辑 | 转移条件 |
 | :--- | :--- | :--- | :--- |
 | **`SEARCH_BALL`** | `ball.visible == False` | 原地旋转扫描搜寻 (`vyaw = 0.40 rad/s`) | `ball.visible == True` |
-| **`APPROACH_BALL`** | 足球偏角 $\theta$ 与测距距离 $Z$ | 视觉伺服转向对齐右脚，速度自适应收敛减速 ($v_x = \text{clip}(k_d (Z - Z_{\text{target}}), 0.12, 0.35)$) | $Z \le 0.18\text{ m}$ (进入踢球区) |
-| **`ALIGN_KICK`** | 足球位于踢球区 | 稳步站立消除惯性，微调偏航正对视觉检测到的球门朝向 | 偏航误差在 $\pm 8.5^\circ$ 以内 |
-| **`KICK`** | 瞄准与站立完成 | 切换为 `ball_kick_right.onnx` 执行爆发式单腿踢球（精准 0.5 秒） | 踢球计时器归零 |
-| **`GOAL_CHECK`** | 踢球动作完成 | 切回平稳站立，观察足球滚动轨迹 | 足球停稳或落入球网 |
+| **`APPROACH_BALL`** | 足球偏角 $\theta$ 与测距距离 $Z$ | 全向视觉伺服对齐右脚方向，前向匀速逼近并进行侧向漂移补偿 ($v_x = 0.35, v_y = 0.05 - 1.2\theta$) | 足球触及相机视野底部 ($c_y \ge 230$) |
+| **`TERMINAL_APPROACH`** | 足球进入鸭嘴视线盲区 | 执行定距 $0.26\text{ m}$ 终末盲步 ($v_x = 0.35\text{ m/s}, t = 1.52\text{ s}$)，直接切入右脚 $0.09\text{ m}$ 击球包线 | 盲步计时器到期 ($t \ge 1.52\text{ s}$) |
+| **`ALIGN_KICK`** | 足球进入击球区 | 切入 `alpha_stand` 稳固站立消除身体前倾惯性 | 站立平稳计时器到期 ($t \ge 0.30\text{ s}$) |
+| **`KICK`** | 站立完成且球在打击位 | 切换为 `ball_kick_right.onnx` 执行爆发式单腿踢球（精准 0.5 秒） | 踢球动作窗口结束 |
+| **`GOAL_CHECK`** | 踢球动作完成 | 切回站立姿态，观察足球滚动轨迹 | 足球入网则庆祝，未入网则重新搜球补射 |
 | **`CELEBRATE`** | 评估器确认破门 | 屏幕弹出金色横幅，头部有节奏地点头欢庆 | 庆祝计时器归零，重置状态 |
 
 ---
@@ -115,10 +119,9 @@ python benchmark.py --trials 10
 ============================================================
   Total Trials:               10
   Ball Detection Rate:        100.0%
-  Approach Success Rate:      90.0%
-  Kick Contact Rate:          80.0%
-  Goal Scoring Rate:          70.0%
-  Mean Time to Kick:          6.45 s
+  Approach Success Rate:      100.0%
+  Kick Contact Rate:          80.0% ~ 90.0%
+  Mean Time to Kick:          7.57 s
   Fall Rate:                  0.0%
 ============================================================
 ```

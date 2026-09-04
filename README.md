@@ -50,21 +50,22 @@ flowchart TD
     subgraph BRAIN ["2. Decision & Visual Servoing"]
         Depth & GoalBearing --> FSM{"SoccerStateMachine (Strict Mode)"}
         FSM -->|Ball not visible| S1["SEARCH_BALL: In-place scan rotation"]
-        FSM -->|Ball detected| S2["APPROACH_BALL: Smooth deceleration visual servoing"]
-        FSM -->|Z <= 0.18m| S3["ALIGN_KICK: Orient toward goal & position right foot"]
-        FSM -->|Aligned| S4["KICK: Trigger ball_kick_right (0.5s window)"]
-        FSM -->|Kick complete| S5["GOAL_CHECK: Observe trajectory"]
-        S5 -->|Goal confirmed| S6["CELEBRATE: Victory head nod"]
+        FSM -->|Ball detected| S2["APPROACH_BALL: Omnidirectional visual servoing with drift compensation"]
+        FSM -->|cy >= 230 (blind spot)| S3["TERMINAL_APPROACH: Calibrated 0.26m strike advance"]
+        FSM -->|Advance complete| S4["ALIGN_KICK: Settle stance in firm standing pose"]
+        FSM -->|Stance settled| S5["KICK: Trigger ball_kick_right (0.5s window)"]
+        FSM -->|Kick complete| S6["GOAL_CHECK: Observe trajectory & follow-up"]
+        S6 -->|Goal confirmed| S7["CELEBRATE: Victory head nod"]
     end
 
     subgraph ACT ["3. Policy Execution Layer (50Hz Low-Pass Filtered)"]
-        S1 & S2 --> WalkPol["alpha_walking.onnx (Scale 0.9, Lowpass 0.7/0.5)"]
-        S4 --> KickPol["ball_kick_right.onnx (Scale 1.0, 0.5s duration)"]
-        S6 --> StandPol["alpha_stand.onnx (Scale 1.0, Rhythmic nod)"]
+        S1 & S2 & S3 --> WalkPol["alpha_walking.onnx (Scale 0.9, Lowpass 0.7/0.5)"]
+        S4 & S6 & S7 --> StandPol["alpha_stand.onnx (Scale 1.0)"]
+        S5 --> KickPol["ball_kick_right.onnx (Scale 1.0, 0.5s duration)"]
     end
 
     subgraph EVAL ["4. Isolated Evaluation & Benchmark"]
-        MuJoCo["MuJoCo Physics Engine"] -. Ground Truth .-> Eval["SoccerEvaluator (Ball distance, contact, goal, fall)"]
+        MuJoCo["MuJoCo Physics Engine"] -. Ground Truth .-> Eval["SoccerEvaluator (Foot contact, velocity, goal, fall)"]
     end
 ```
 
@@ -72,14 +73,17 @@ flowchart TD
 
 ## 🎯 State Machine Specification
 
+Because the forward-facing egocentric camera cannot see objects directly beneath the beak ($Z \le 0.35\text{ m}$), the controller solves the terminal camera blind spot through a RoboCup-standard visual dead-reckoning strike sequence:
+
 | State | Perception Trigger | Control Action | Transition Condition |
 | :--- | :--- | :--- | :--- |
 | **`SEARCH_BALL`** | `ball.visible == False` | In-place yaw spin ($v_{\text{yaw}} = 0.40\text{ rad/s}$) | `ball.visible == True` |
-| **`APPROACH_BALL`** | Ball bearing and estimated distance $Z$ | Visual servoing steering ($v_{\text{yaw}} = -k_p \theta$) and distance-adaptive forward speed ($v_x = \text{clip}(k_d (Z - Z_{\text{target}}), 0.12, 0.35)$) | $Z \le 0.18\text{ m}$ (kicking zone) |
-| **`ALIGN_KICK`** | Ball in kicking zone | Stand firmly, orient heading toward detected goal bearing | Heading alignment within $\pm 8.5^\circ$ |
-| **`KICK`** | Stance settled and aligned | Swap ONNX policy to `ball_kick_right.onnx` for exactly $0.5\text{ s}$ | $t \ge t_{\text{kick}} + 0.5\text{ s}$ |
-| **`GOAL_CHECK`** | Kick finished | Stand upright and observe ball trajectory | Ball enters goal or velocity settles |
-| **`CELEBRATE`** | Evaluator confirms goal | Pitch head up and down rhythmically, play victory sound | Timer expires |
+| **`APPROACH_BALL`** | Ball bearing $\theta$ and depth $Z$ | Visual servoing steering ($v_{\text{yaw}} = -2.0 \theta$), forward march ($v_x = 0.35$), and lateral drift compensation ($v_y$) | Ball touches bottom of frame ($c_y \ge 230$) |
+| **`TERMINAL_APPROACH`** | Ball enters beak blind spot | Fixed $0.26\text{ m}$ forward dead-reckoning advance ($v_x = 0.35\text{ m/s}$, $t = 1.52\text{ s}$) directly into the foot strike volume | Timer expires ($t \ge 1.52\text{ s}$) |
+| **`ALIGN_KICK`** | Ball in strike volume | Stand firmly in `alpha_stand` to eliminate forward inertia | Stance settled ($t \ge 0.30\text{ s}$) |
+| **`KICK`** | Stance settled and aligned | Swap ONNX policy to `ball_kick_right.onnx` for dynamic single-leg strike | Kick duration expires ($0.5\text{ s}$) |
+| **`GOAL_CHECK`** | Kick finished | Stand upright and observe ball trajectory | Ball scores or re-engages `SEARCH_BALL` |
+| **`CELEBRATE`** | Evaluator confirms goal | Pitch head up and down rhythmically, victory celebration | Timer expires |
 
 ---
 

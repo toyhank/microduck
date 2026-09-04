@@ -186,30 +186,33 @@ def main():
 
             elif state == "APPROACH_BALL":
                 if ball_found:
-                    # Target bearing: bias slightly right for right-foot kick
-                    err_x = 160 - (ball_cx + 10)
-                    cmd_vyaw = float(np.clip((err_x / focal_length) * 1.5, -0.45, 0.45))
+                    # Target bearing: bias slightly right (+12px) for right-foot kick
+                    err_x = 160 - (ball_cx + 12)
+                    cmd_vyaw = float(np.clip((err_x / focal_length) * 1.8, -0.45, 0.45))
 
-                    # Monocular distance stopping threshold (~0.18m)
-                    if estimated_dist <= 0.18:
-                        print(f"[State] Reached kick position ({estimated_dist:.2f}m)! Braking to stabilize...")
-                        duck.stop()
-                        time.sleep(0.6)  # Settle stance before triggering kick
-
-                        print("⚡ Executing RIGHT-FOOT KICK! GOOOOOAL!")
-                        duck.kick("right")
-                        state = "KICKING"
-                        kick_cooldown_end = current_time + 3.0
+                    # When ball reaches lower frame boundary or close range (~0.28m)
+                    if estimated_dist <= 0.28 or (ball_cy is not None and ball_cy >= 225):
+                        print(f"[State] Ball reached terminal threshold ({estimated_dist:.2f}m, cy={ball_cy})! Executing calibrated strike advance...")
+                        state = "TERMINAL_APPROACH"
+                        terminal_end_time = current_time + 1.40
                     else:
-                        # Smooth deceleration
-                        dist_err = estimated_dist - 0.15
-                        cmd_vx = float(np.clip(0.5 * dist_err + 0.10, 0.12, 0.32))
-                        duck.move(vx=cmd_vx, vy=0.0, vyaw=cmd_vyaw)
+                        duck.move(vx=0.32, vy=0.04, vyaw=cmd_vyaw)
                 else:
-                    # Lost ball briefly, scan or drift
-                    duck.move(vx=0.08, vy=0.0, vyaw=0.0)
+                    duck.move(vx=0.15, vy=0.0, vyaw=0.0)
                     time.sleep(0.2)
                     state = "SEARCH_BALL"
+
+            elif state == "TERMINAL_APPROACH":
+                # Blind dead-reckoning advance into 0.09m strike zone
+                duck.move(vx=0.32, vy=0.03, vyaw=0.0)
+                if current_time >= terminal_end_time:
+                    print("[State] Settling stance before dynamic kick...")
+                    duck.stop()
+                    time.sleep(0.35)  # Eliminate forward momentum
+                    print("⚡ Executing RIGHT-FOOT KICK! GOOOOOAL!")
+                    duck.kick("right")
+                    state = "KICKING"
+                    kick_cooldown_end = current_time + 3.0
 
             time.sleep(0.08)  # ~12Hz control loop
 

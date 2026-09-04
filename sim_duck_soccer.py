@@ -65,14 +65,19 @@ def main():
     policy_runner = PolicyRunner(POLICY_WALK, POLICY_KICK_R, POLICY_KICK_L, POLICY_STAND)
 
     # 3. Independent Evaluator (ground truth only used for evaluation logging, NOT control)
-    evaluator = SoccerEvaluator(goal_x=2.8, goal_y=0.0, goal_width=0.8)
+    foot_site_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, "right_foot")
+    foot_geom_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "right_foot_collision")
+    ball_geom_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "ball_geom")
+    evaluator = SoccerEvaluator(
+        goal_x=2.8, goal_y=0.0, goal_width=0.8,
+        foot_geom_id=foot_geom_id, ball_geom_id=ball_geom_id, foot_site_id=foot_site_id
+    )
     metrics = EpisodeMetrics()
 
     # Hardware sensor indices
     imu_ang_vel_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "imu_ang_vel")
     trunk_base_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "trunk_base")
     ball_body_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "ball")
-    right_foot_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "sole_right")
 
     ball_jnt_id = m.body_jntadr[ball_body_id]
     ball_qpos_adr = m.jnt_qposadr[ball_jnt_id]
@@ -158,7 +163,7 @@ def main():
             # ====================================================
             # 2. Control & State Machine (Strict Vision Only)
             # ====================================================
-            state, cmd_vx, cmd_vyaw, active_mode, trigger_kick = state_machine.update(
+            state, cmd_vx, cmd_vy, cmd_vyaw, active_mode, trigger_kick = state_machine.update(
                 ball_det, goal_det, elapsed_time
             )
 
@@ -186,6 +191,7 @@ def main():
             command_13d = np.zeros(13, dtype=np.float32)
             if active_mode == "walk":
                 command_13d[0] = cmd_vx
+                command_13d[1] = cmd_vy
                 command_13d[2] = cmd_vyaw
             elif state == SoccerState.CELEBRATE:
                 command_13d[4] = np.sin(elapsed_time * 6.0) * 0.2  # Head nod
@@ -202,7 +208,7 @@ def main():
             # ====================================================
             # 4. Independent Evaluation (Strictly outside controller)
             # ====================================================
-            evaluator.evaluate_step(d, trunk_base_id, ball_body_id, right_foot_id, metrics, elapsed_time)
+            evaluator.evaluate_step(d, trunk_base_id, ball_body_id, foot_site_id, metrics, elapsed_time, ball_qvel_adr=ball_qvel_adr)
             if metrics.goal_scored and not state_machine.goal_scored:
                 state_machine.goal_scored = True
                 print("\n⚽ [EVALUATOR] Goal confirmed! Ball crossed goal line!")
