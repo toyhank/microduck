@@ -1,7 +1,7 @@
-# 🦆 Microduck Soccer (小黄鸭自主视觉足球机器人) ⚽
+# 🦆 Microduck Soccer (小黄鸭自主视觉踢足球系统) ⚽
 
 <p align="center">
-  <a href="README.md"><b>English</b></a> | <a href="README_zh.md"><b>中文</b></a>
+  <a href="README.md"><b>English</b></a> | <a href="README_zh.md"><b>中文文档</b></a>
 </p>
 
 <p align="center">
@@ -14,23 +14,25 @@
 </p>
 
 <p align="center">
-  <em>首个基于 Pollen Robotics <b>Microduck</b> 双足小黄鸭机器人的端到端<b>自主视觉寻球、逼近、瞄准球门与抬腿大力抽射</b>全闭环系统。</em><br>
-  <em>同时支持 <b>MuJoCo 真实物理引擎三维仿真</b> 与 <b>真机（Rockchip RK3566）单机完全脱机运行</b>！</em>
+  <em>专为 <b>Pollen Robotics Microduck</b> 设计的<b>仿真优先视觉伺服控制系统</b>，为官方“盲踢”（Ball-blind）的强化学习踢球策略提供端到端视觉闭环。</em><br>
+  <em>具备严格纯视觉导航（无作弊上帝视角）、单目尺度测距、真实物理碰撞射门（无瞬移球作弊），以及自动化定量基准评测套件。</em>
 </p>
 
 ---
 
-## 📖 项目简介 (Overview)
+## 📖 定位与核心贡献 (Motivation & Value)
 
-**Microduck（小黄鸭）** 是一款高 25cm、重约 800g 的 15 自由度双足开源机器人。官方虽然开源了行走与踢球的基础强化学习策略，但截至目前官方路线图中尚未实现**全自主的视觉寻球与踢球闭环系统**（在官方文档中仍标记为待开发特性）。
+在官方开源的 [Microduck](https://github.com/pollen-robotics/microduck) 强化学习策略中，`ball_kick_right.onnx` 本身是**无视觉感知（Ball-blind）**的：训练时假设操作者或上层已将鸭子对准球，策略仅负责在站立姿态下执行踢腿动作。官方路线图也将全自主的“找球→走过去→对准→踢球”（Ball play）列为待实现的感知驱动行为。
 
-本项目的核心目标是为 Microduck 赋予**“球场自主感知与竞技大脑”**：
-1. **👁️ 自主视觉感知**：无需外部动捕或全局相机，仅依靠小黄鸭头部的第一人称广角摄像头，利用轻量级 OpenCV 实时识别足球与球门。
-2. **🏃 双足强化学习行走 (RL Locomotion)**：运行 `alpha_walking.onnx` 策略网络，结合视觉偏角误差（Visual Servoing）平稳转向并快步逼近足球。
-3. **🎯 球门对齐与位姿调整**：到达球前时根据球门朝向进行身体朝向对齐，并将足球精确定位在踢球脚的发力甜点位。
-4. **⚡ 动态单脚平衡与抬腿抽射 (RL Kicking)**：动态切换至 `ball_kick_right.onnx` 策略网络，小黄鸭左腿单脚单点平衡，右腿向后蓄力后大幅前摆猛烈抽射，将足球强力射入球门！
-5. **🎉 入网检测与胜利欢庆**：检测足球滚过球门线落入球网，弹出进球横幅并触发小黄鸭点头欢庆动作。
-6. **🤖 1:1 无缝迁移真机**：提供独立的单机真机运行脚本，通过本地 Unix Socket (`/run/robotd.sock`) 与机载 `robotd` 守护进程通信，完全不需要外部笔记本电脑！
+虽然社区中已有如 `quackd`（主要为 2D 模拟器框架）和部分基于第三方板卡（如 RDK X5）的追球尝试，但 **Microduck Soccer** 专注于：**直接面向官方 Microduck 原生 MJCF 物理模型、传感器规范与 `robotd` 运行时的仿真优先严谨视觉伺服层**：
+
+1. **严格纯视觉模式 (`--mode strict`)**：控制器**绝不读取**任何 MuJoCo 上帝视角真值（`d.xpos`, `d.qvel` 被严格隔离于外部评估器中），仅使用机载 RGB 广角相机画面和关节/IMU 本体感知。
+2. **物理真实击球（拒绝瞬移作弊）**：小黄鸭通过自主视觉导航走到球前，由右脚物理击打真实足球入网，踢球前**绝不使用任何坐标传送（Teleportation）**。
+3. **单目尺度测距几何算法**：已知足球物理直径 $D = 70\text{ mm}$，利用小孔成像几何实时求解公制度量距离：
+   $$Z \approx \frac{f \cdot D}{d}$$
+   随着小黄鸭逼近足球，步速根据真实距离平滑收敛减速，消除走过头问题。
+4. **对齐官方 `robotd` 控制链**：完整复刻了官方运动尺度（行走 0.9、踢球/站立 1.0）、一阶低通滤波（腿部 $\alpha=0.7$、头部 $\alpha=0.5$），并将射门时钟严格设定为官方标准的 **0.5 秒**。
+5. **严守官方机载 RPC 规范**：真机脚本 [`duck_soccer_onboard.py`](duck_soccer_onboard.py) 严格匹配 `duck-ipc-proto`：连续速度使用带 `vyaw` 的 JSON-RPC 通知（而非被拒绝的 `vtheta`），离散动作使用带 `id` 的请求，并支持官方 `chirp` 欢庆叫声。
 
 ---
 
@@ -38,139 +40,111 @@
 
 ```mermaid
 flowchart TD
-    subgraph SENSE ["1. 视觉感知层 (Sensing & CV)"]
-        Cam["头戴第一人称摄像头 (320x240 @ 10Hz)"] --> BGR["BGR 原始视频帧"]
-        BGR --> HSV["HSV 颜色空间转换"]
-        HSV --> MaskBall["橙红高对比掩膜 (足球提取)"]
-        HSV --> MaskGoal["蓝色特征掩膜 (球门提取)"]
-        MaskBall --> CentroidBall["足球质心 (cx, cy) & 投影面积"]
-        MaskGoal --> CentroidGoal["球门朝向 & 目标方位角"]
+    subgraph SENSE ["1. 视觉感知层 (10Hz OpenCV)"]
+        Cam["头戴第一人称摄像头 (320x240 @ 10Hz)"] --> BGR["BGR 原始图像"]
+        BGR --> BallDet["BallDetector: 颜色掩膜 + 最小外接圆"]
+        BGR --> GoalDet["GoalDetector: 蓝色特征与横梁定位"]
+        BallDet --> Depth["单目深度 Z = (f * D) / d & 偏角 Bearing"]
+        GoalDet --> GoalBearing["球门朝向方位角"]
     end
 
-    subgraph BRAIN ["2. 决策与有限状态机 (FSM State Machine)"]
-        CentroidBall & CentroidGoal --> FSM{"有限状态机"}
-        FSM -->|未发现足球| S1["SEARCH_BALL: 原地旋转扫描"]
-        FSM -->|锁定足球| S2["APPROACH_BALL: 视觉伺服平稳逼近"]
-        FSM -->|到达球前 (面积阈值)| S3["ALIGN_KICK: 对准球门方向"]
-        FSM -->|对齐完毕| S4["KICK: 触发抬腿抽射"]
-        FSM -->|踢球完成| S5["GOAL_CHECK: 判定进球"]
-        S5 -->|进球成功| S6["CELEBRATE: 点头欢呼庆祝"]
+    subgraph BRAIN ["2. 决策与有限状态机 (严格模式)"]
+        Depth & GoalBearing --> FSM{"SoccerStateMachine"}
+        FSM -->|未见足球| S1["SEARCH_BALL: 原地慢速扫描"]
+        FSM -->|锁定足球| S2["APPROACH_BALL: 平滑减速视觉伺服逼近"]
+        FSM -->|距离 <= 0.18m| S3["ALIGN_KICK: 瞄准球门并站稳"]
+        FSM -->|对准完成| S4["KICK: 触发 ball_kick_right (0.5s 窗口)"]
+        FSM -->|踢球动作结束| S5["GOAL_CHECK: 观察足球轨迹"]
+        S5 -->|进球判定成功| S6["CELEBRATE: 点头欢庆动作"]
     end
 
-    subgraph ACT ["3. 策略控制层 (RL Motion Control @ 50Hz)"]
-        S1 & S2 --> WalkPol["行走策略 alpha_walking.onnx (Twist 指令控制)"]
-        S3 --> AlignPol["微调步态控制"]
-        S4 --> KickPol["射门策略 ball_kick_right.onnx (全零命令爆发)"]
+    subgraph ACT ["3. 策略执行层 (50Hz 低通滤波)"]
+        S1 & S2 --> WalkPol["行走策略 alpha_walking.onnx (Scale 0.9, Lowpass 0.7/0.5)"]
+        S4 --> KickPol["踢球策略 ball_kick_right.onnx (Scale 1.0, 0.5s 窗口)"]
         S6 --> StandPol["站立策略 alpha_stand.onnx (头部韵律点头)"]
     end
 
-    subgraph PLATFORM ["4. 执行终端 (Execution)"]
-        WalkPol & KickPol & StandPol --> MuJoCoSim["MuJoCo 3D 物理仿真环境 (scene_soccer.xml)"]
-        WalkPol & KickPol & StandPol --> RealDuck["Microduck 真机 (Rockchip RK3566 /run/robotd.sock)"]
+    subgraph EVAL ["4. 独立评估套件 (不干涉控制)"]
+        MuJoCo["MuJoCo 物理引擎"] -. 真值数据 .-> Eval["SoccerEvaluator (统计到球率、触球率、进球率)"]
     end
 ```
 
 ---
 
-## 🎯 状态机详细生命周期 (FSM Details)
+## 🎯 状态机详细规范 (FSM Details)
 
-| 状态 (State) | 触发条件 | 控制行为 | 退出条件 |
+| 状态 (State) | 感知输入条件 | 运动控制逻辑 | 转移条件 |
 | :--- | :--- | :--- | :--- |
-| **`SEARCH_BALL`** | 视野内未检测到有效足球轮廓 | 身体原地慢速旋转 (`vtheta = 0.45 rad/s`)，头部保持前倾扫描 | 检测到有效足球轮廓 (`area > 15`) |
-| **`APPROACH_BALL`** | 锁定足球重心 `(cx, cy)` | 计算中心偏角误差 `err_x = 160 - cx`，视觉伺服转向并以 `vx = 0.35 m/s` 快步前行 | 接近足球 (`dist < 0.22m` 或 `area > 1800`) |
-| **`ALIGN_KICK`** | 到达球前准备区 | 计算小黄鸭朝向与球门中心连线夹角，原地慢速旋转使身体正对球门，微调球与右脚相对位置 | 偏航误差 `|yaw_diff| < 10°` |
-| **`KICK`** | 对齐完成 | 切换为 `ball_kick_right.onnx`，左腿单脚支撑平衡，右腿大幅后摆后猛烈抽射（持续约 2.7s） | 踢球动作时钟周期耗尽 |
-| **`GOAL_CHECK`** | 踢球动作完成 | 观察足球飞行轨迹与终点位置 | 球速收敛，或判定球进门线 |
-| **`CELEBRATE`** | 足球越过球门线（`x >= 2.75m, |y| < 0.4m`） | 屏幕弹出金色进球特效，小黄鸭切换站立模式并有节奏地点头欢呼 | 庆祝倒计时结束，重置至搜球 |
+| **`SEARCH_BALL`** | `ball.visible == False` | 原地旋转扫描搜寻 (`vyaw = 0.40 rad/s`) | `ball.visible == True` |
+| **`APPROACH_BALL`** | 足球偏角 $\theta$ 与测距距离 $Z$ | 视觉伺服转向对齐右脚，速度自适应收敛减速 ($v_x = \text{clip}(k_d (Z - Z_{\text{target}}), 0.12, 0.35)$) | $Z \le 0.18\text{ m}$ (进入踢球区) |
+| **`ALIGN_KICK`** | 足球位于踢球区 | 稳步站立消除惯性，微调偏航正对视觉检测到的球门朝向 | 偏航误差在 $\pm 8.5^\circ$ 以内 |
+| **`KICK`** | 瞄准与站立完成 | 切换为 `ball_kick_right.onnx` 执行爆发式单腿踢球（精准 0.5 秒） | 踢球计时器归零 |
+| **`GOAL_CHECK`** | 踢球动作完成 | 切回平稳站立，观察足球滚动轨迹 | 足球停稳或落入球网 |
+| **`CELEBRATE`** | 评估器确认破门 | 屏幕弹出金色横幅，头部有节奏地点头欢庆 | 庆祝计时器归零，重置状态 |
 
 ---
 
 ## 🚀 仿真快速上手 (Simulation Quickstart)
 
 ### 1. 环境准备
-确保已安装 Python 3.10 或更高版本，然后安装依赖库：
-
 ```bash
-# 建议在项目虚拟环境中运行
+git clone https://github.com/toyhank/microduck.git
+cd microduck
 pip install -r requirements.txt
 ```
 
-### 2. 一键启动 3D 足球仿真
-在项目根目录下运行：
-
+### 2. 启动 3D 足球仿真
 ```bash
-python sim_duck_soccer.py
+# 严格纯视觉模式 (默认: 100% 视觉控制，物理踢球，无作弊)
+python sim_duck_soccer.py --mode strict
+
+# 演示模式 (允许真值对齐辅助，便于调试)
+python sim_duck_soccer.py --mode demo
 ```
 
-### 3. 运行窗口说明
-启动后系统将同时渲染两个窗口：
-1. **MuJoCo 3D 主物理视窗**：
-   - 全局观察小黄鸭在绿茵场上的走位、单脚平衡以及抬腿踢球进网的真实物理过程。
-   - 可通过鼠标右键旋转视角、滚轮缩放、左键拖拽视角。
-2. **OpenCV 第一人称 HUD 视窗**：
-   - 展示从小黄鸭头顶相机所看到的真实视角。
-   - 实时绘制：足球检测包围盒（橙圈）、球门标靶（蓝框）、当前状态机阶段、距离与速度遥测信息、中央准星。
+### 3. 运行自动化 Benchmark 基准评测
+运行批量随机测试（随机球坐标与鸭子初始偏角），生成量化表现报告：
+```bash
+python benchmark.py --trials 10
+```
+
+基准测试报告输出示例：
+```text
+============================================================
+                  BENCHMARK RESULTS
+============================================================
+  Total Trials:               10
+  Ball Detection Rate:        100.0%
+  Approach Success Rate:      90.0%
+  Kick Contact Rate:          80.0%
+  Goal Scoring Rate:          70.0%
+  Mean Time to Kick:          6.45 s
+  Fall Rate:                  0.0%
+============================================================
+```
 
 ---
 
-## 🤖 真机单机脱机部署指南 (Real Robot Onboard Deployment)
+## 🤖 真机单机运行 (Real Robot Onboard Deployment)
 
-小黄鸭机身内置一颗 **Rockchip RK3566（四核 64 位 ARM Cortex-A55 Linux）** 主板。本项目提供的 [`duck_soccer_onboard.py`](duck_soccer_onboard.py) 可以**直接在小黄鸭本机独立运行，完全不需要连接电脑**！
+脚本 [`duck_soccer_onboard.py`](duck_soccer_onboard.py) 专门适配小黄鸭体内的 Rockchip RK3566 开发板：
 
-### 1. 部署原理
-- **视觉**：直接由 OpenCV 捕获机载头部摄像头 `/dev/video0`。
-- **通信**：通过 Python 标准库直接连接小黄鸭本机 Unix 套接字 **`/run/robotd.sock`**，发送 JSON-RPC 2.0 指令：
-  - 走路：`{"method": "robot.move", "params": {"vx": 0.35, "vy": 0.0, "vtheta": ...}}`
-  - 踢球：`{"method": "robot.do", "params": {"skill": "kick_right"}}`
-  - 叫声：`{"method": "robot.sound", "params": {"tag": "happy"}}`
+### 1. 协议实现
+- **相机**：由 OpenCV 捕获 `/dev/video0` 画面。
+- **本地 Socket**：直接连接 `/run/robotd.sock` 发送 JSON-RPC 2.0：
+  - 连续速度控制：`notify("robot.move", {"vx": 0.3, "vy": 0.0, "vyaw": ...})`（协议严格要求 `vyaw`）
+  - 离散技能请求：`request("robot.do", {"skill": "kick_right"})`
+  - 声音反馈：`notify("robot.sound", {"tag": "chirp"})`
 
-### 2. 部署与运行步骤
-
-#### 第一步：将脚本传入小黄鸭
-电脑与小黄鸭连入同一 Wi-Fi 后，使用 scp 传输脚本：
+### 2. 运行步骤
 ```bash
+# 1. 传输脚本到小黄鸭
 scp duck_soccer_onboard.py radxa@<小黄鸭IP>:~/
-```
 
-#### 第二步：登录小黄鸭测试运行
-```bash
+# 2. 登录运行
 ssh radxa@<小黄鸭IP>
 python3 duck_soccer_onboard.py
 ```
-
-#### 第三步：配置开机完全脱机自启（真正实现通电即踢）
-在小黄鸭终端中创建一个自启服务：
-```bash
-sudo systemctl edit --force --full duck-soccer.service
-```
-粘贴以下内容并保存：
-```ini
-[Unit]
-Description=Microduck Autonomous Soccer Onboard System
-After=robotd.service
-Wants=robotd.service
-
-[Service]
-Type=simple
-User=radxa
-WorkingDirectory=/home/radxa
-ExecStart=/usr/bin/python3 /home/radxa/duck_soccer_onboard.py
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-启用该服务：
-```bash
-sudo systemctl enable --now duck-soccer.service
-```
-现在，断开所有 Wi-Fi 和 SSH 连接，只要给小黄鸭通电，把它放在地板上和一个橙色小球在一起，它就会**完全自主地环视四周、迈步奔向足球并大力抽射**！
-
-### 3. 真机实操小贴士
-1. **足球推荐**：请使用 70mm 直径、15g~30g 的**轻质空心地板球 (Floorball)、儿童发泡软球或塑料小球**，切勿使用成人真皮足球以保护舵机齿轮。
-2. **射门前刹车缓冲**：实物地面摩擦力可能存在滑移，脚本已内置接近球后先下发 `robot.stop()` 稳立 0.6 秒以消除运动惯性，确保单脚踢球时机身不晃动。
-3. **光照校准**：实际房间灯光若有偏色，可在 `duck_soccer_onboard.py` 中微调 `lower_ball` 与 `upper_ball` 的 HSV 范围。
 
 ---
 
@@ -178,42 +152,29 @@ sudo systemctl enable --now duck-soccer.service
 
 ```text
 microduck/
-├── sim_duck_soccer.py        # ⚽ MuJoCo 仿真与 CV 视觉闭环主程序
-├── duck_soccer_onboard.py    # 🤖 真机板载完全脱机独立运行脚本
-├── requirements.txt          # 📦 项目核心依赖列表
+├── sim_duck_soccer.py        # ⚽ 仿真主程序 (--mode strict / demo)
+├── benchmark.py              # 🏁 自动化基准测试套件
+├── duck_soccer_onboard.py    # 🤖 符合官方协议的真机单机运行程序
+├── requirements.txt          # 📦 依赖列表
+├── LICENSE                   # 📄 Apache-2.0 开源许可
+├── NOTICE                    # 📄 版权声明与上游归属
 ├── README.md                 # 📖 英文说明文档
 ├── README_zh.md              # 📖 中文说明文档
 │
-├── microduck_rl/             # 🏟️ MuJoCo 机器人与物理场景模型
-│   └── src/mjlab_microduck/robot/microduck/
-│       ├── scene_soccer.xml  # ⚽ 足球场、球门、球网与足球场景配置
-│       ├── robot_allcollisions.xml # 鸭子 15-DOF 碰撞几何与相机定义
-│       └── assets/           # STL 网格模型与贴图
+├── microduck_soccer/         # 📦 核心算法包
+│   ├── perception/           # 单目测距与球门检测
+│   ├── control/              # 视觉伺服与严格状态机
+│   ├── policy/               # 对齐官方 robotd 参数的策略推理器
+│   └── evaluation/           # 独立基准评估器
 │
-└── microduck/                # 🧠 强化学习运控策略库
-    └── policies/
-        ├── alpha_walking.onnx    # 官方 PPO 双足平稳行走网络 (61D -> 14D)
-        ├── ball_kick_right.onnx  # 官方 PPO 右腿凌空抽射网络 (61D -> 14D)
-        ├── ball_kick_left.onnx   # 官方 PPO 左腿抽射网络 (61D -> 14D)
-        └── alpha_stand.onnx      # 官方 PPO 站立平衡网络 (61D -> 14D)
+├── microduck_rl/             # 🏟️ MuJoCo 物理场景模型 (scene_soccer.xml)
+└── microduck/                # 🧠 官方预训练 ONNX 运控模型库
 ```
 
 ---
 
-## 🗺️ 未来展望 (Roadmap)
+## 🤝 致谢与上游声明 (Acknowledgments)
 
-- [x] 基于第一人称相机的橙红色足球检测与追踪
-- [x] 视觉伺服平稳行走逼近足球
-- [x] 基于球门位置的射门对齐与发力点调整
-- [x] 动态切换强化学习射门策略完成抽射
-- [x] 真机 Rockchip RK3566 单机完全脱机运行脚本
-- [ ] **守门鸭对战模式**：引入第二只小黄鸭部署在门前，利用视觉左右横跳扑救。
-- [ ] **双鸭 2v2 足球赛**：实现传球协助与团队对抗策略。
-- [ ] **NPU 模型加速**：将视觉检测网络转换为 RKNN 格式，直接在板载 NPU 上以 60FPS 运行。
-
----
-
-## 🤝 致谢 (Acknowledgments)
-
-- 感谢 **[Pollen Robotics](https://pollen-robotics.com)** 与 **[Hugging Face](https://huggingface.co)** 开源优秀的 Microduck 双足机器人平台及其训练策略。
-- 物理仿真由 **[DeepMind MuJoCo](https://mujoco.org/)** 强力驱动。
+- 本项目基于 **[Pollen Robotics](https://pollen-robotics.com) / [Hugging Face](https://huggingface.co)** 开源的 Microduck 双足机器人平台构建。
+- 启发自社区相关工作（包括 `quackd` 与 D-Robotics RDK X5）。
+- 物理仿真由 **[DeepMind MuJoCo](https://mujoco.org/)** 提供强力驱动。

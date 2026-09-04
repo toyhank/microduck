@@ -1,7 +1,7 @@
-# 🦆 Microduck Soccer: Autonomous CV Bipedal Soccer Robot ⚽
+# 🦆 Microduck Soccer: Closed-Loop Visual Servoing & Bipedal Kick System ⚽
 
 <p align="center">
-  <a href="README.md"><b>English</b></a> | <a href="README_zh.md"><b>中文</b></a>
+  <a href="README.md"><b>English</b></a> | <a href="README_zh.md"><b>中文文档</b></a>
 </p>
 
 <p align="center">
@@ -14,23 +14,24 @@
 </p>
 
 <p align="center">
-  <em>The first end-to-end <b>autonomous computer vision soccer system</b> for Pollen Robotics' <b>Microduck</b> bipedal robot.</em><br>
-  <em>Features autonomous ball tracking, visual servoing, goal alignment, dynamic single-leg kicking, and goal celebration in both <b>MuJoCo 3D simulation</b> and <b>real-world standalone onboard execution</b> (Rockchip RK3566)!</em>
+  <em>A simulator-first visual servoing layer for <b>Pollen Robotics Microduck</b> that closes the perception-action loop around the official ball-blind <code>BallKick</code> policy.</em><br>
+  <em>Features strict vision-only navigation (no ground-truth state cheats), monocular metric depth estimation, physical bipedal kicking (no ball teleportation), and an automated benchmark suite.</em>
 </p>
 
 ---
 
-## 📖 Overview
+## 📖 Motivation & Technical Positioning
 
-**Microduck** is a compact 25 cm, ~800 g, 15-DOF bipedal robot developed by Pollen Robotics (Hugging Face). While baseline walking and kicking reinforcement learning policies have been trained, the official roadmap lists full autonomous ball play as an unbuilt idea.
+In the official [Pollen Robotics Microduck](https://github.com/pollen-robotics/microduck) reinforcement learning stack, the pre-trained `ball_kick_right.onnx` policy is intentionally **ball-blind**: it executes a dynamic kicking motion from a standing stance, assuming an operator or high-level behavior has already navigated the robot to the ball. Furthermore, official architecture documents designate ball play (`approach / line up / kick`) as a planned perception-driven autonomous behavior.
 
-This project delivers the complete, self-contained **autonomous soccer brain** for Microduck:
-1. **👁️ Egocentric Vision (OpenCV)**: Uses only the robot's front-facing head camera without external motion capture or global cameras. Detects the ball and goal at 10Hz+.
-2. **🏃 Deep RL Locomotion**: Uses the official `alpha_walking.onnx` policy driven by visual servoing to steer and navigate smoothly toward the ball.
-3. **🎯 Goal Alignment & Ball Positioning**: Centers the goal in view and positions the ball in the sweet spot for the kicking foot.
-4. **⚡ Dynamic Single-Leg Kicking (Deep RL)**: Switches to `ball_kick_right.onnx`, dynamically balances on the left leg, draws the right leg back, and swings with an explosive kick!
-5. **🎉 Goal Line Detection & Celebration**: Detects when the ball crosses into the net, triggers a celebratory HUD banner, and makes the duck nod proudly!
-6. **🤖 Standalone Real Robot Onboard Deployment**: Ships with `duck_soccer_onboard.py`, communicating via Unix Socket (`/run/robotd.sock`) over JSON-RPC 2.0 directly on the onboard Rockchip RK3566 board—no external laptop needed!
+While projects like `quackd` (2D simulator) and recent community edge implementations (e.g. RDK X5) explore ball tracking, **Microduck Soccer** provides a clean, simulator-first, strict visual servoing layer designed directly against the official Microduck MJCF models, sensor conventions, and `robotd` runtime:
+
+- **100% Strict Vision (`--mode strict`)**: The controller relies strictly on RGB head camera frames and robot proprioception (IMU, joint encoders). All ground-truth state variables (`d.xpos`, `d.qvel`) are strictly quarantined to an external evaluator for benchmarking.
+- **Physical Dynamic Kick (No Teleportation)**: Navigates the physical robot until the foot strikes the real ball. No artificial ball teleportation or snapping.
+- **Monocular Metric Depth Estimation**: Solves metric distance from known ball diameter ($D = 70\text{ mm}$) using pinhole geometry:
+  $$Z \approx \frac{f \cdot D}{d}$$
+- **Official `robotd` Control Chain Alignment**: Implements official action scaling ($0.9$ walk, $1.0$ kick/stand), first-order joint low-pass filters (legs $\alpha=0.7$, head $\alpha=0.5$), and official 0.5s kick duration windows.
+- **Onboard RPC Protocol Compliance**: Real-robot script (`duck_soccer_onboard.py`) strictly adheres to `duck-ipc-proto`: continuous `robot.move` notifications with `vyaw` (not `vtheta`), discrete `robot.do` requests, and official `chirp` voice tags.
 
 ---
 
@@ -38,138 +39,111 @@ This project delivers the complete, self-contained **autonomous soccer brain** f
 
 ```mermaid
 flowchart TD
-    subgraph SENSE ["1. Perception Layer (Sensing & CV)"]
-        Cam["Egocentric Head Camera (320x240 @ 10Hz)"] --> BGR["Raw Video Frame"]
-        BGR --> HSV["HSV Color Space Conversion"]
-        HSV --> MaskBall["Orange/Red Mask (Ball Extraction)"]
-        HSV --> MaskGoal["Blue Feature Mask (Goal Extraction)"]
-        MaskBall --> CentroidBall["Ball Centroid (cx, cy) & Contour Area"]
-        MaskGoal --> CentroidGoal["Goal Heading & Orientation"]
+    subgraph SENSE ["1. Perception Layer (10Hz OpenCV)"]
+        Cam["Egocentric Head Camera (320x240 @ 10Hz)"] --> BGR["Raw RGB Frame"]
+        BGR --> BallDet["BallDetector: HSV + MinEnclosingCircle"]
+        BGR --> GoalDet["GoalDetector: Blue Feature Extraction"]
+        BallDet --> Depth["Metric Depth Z = (f * D) / d & Bearing"]
+        GoalDet --> GoalBearing["Goal Bearing & Heading Angle"]
     end
 
-    subgraph BRAIN ["2. Decision & Finite State Machine (FSM)"]
-        CentroidBall & CentroidGoal --> FSM{"FSM Decision Engine"}
-        FSM -->|Ball not visible| S1["SEARCH_BALL: Spin in place to scan"]
-        FSM -->|Ball detected| S2["APPROACH_BALL: Visual servoing navigation"]
-        FSM -->|Ball reached| S3["ALIGN_KICK: Orient body toward goal"]
-        FSM -->|Aligned with goal| S4["KICK: Trigger explosive single-leg kick"]
-        FSM -->|Kick motion finished| S5["GOAL_CHECK: Verify ball trajectory"]
-        S5 -->|Goal confirmed| S6["CELEBRATE: Victory head nod & quack"]
+    subgraph BRAIN ["2. Decision & Visual Servoing"]
+        Depth & GoalBearing --> FSM{"SoccerStateMachine (Strict Mode)"}
+        FSM -->|Ball not visible| S1["SEARCH_BALL: In-place scan rotation"]
+        FSM -->|Ball detected| S2["APPROACH_BALL: Smooth deceleration visual servoing"]
+        FSM -->|Z <= 0.18m| S3["ALIGN_KICK: Orient toward goal & position right foot"]
+        FSM -->|Aligned| S4["KICK: Trigger ball_kick_right (0.5s window)"]
+        FSM -->|Kick complete| S5["GOAL_CHECK: Observe trajectory"]
+        S5 -->|Goal confirmed| S6["CELEBRATE: Victory head nod"]
     end
 
-    subgraph ACT ["3. Policy Execution Layer (RL Motion Control @ 50Hz)"]
-        S1 & S2 --> WalkPol["Walking Policy: alpha_walking.onnx (Twist command)"]
-        S3 --> AlignPol["Micro-alignment step control"]
-        S4 --> KickPol["Kicking Policy: ball_kick_right.onnx (Zero command burst)"]
-        S6 --> StandPol["Standing Policy: alpha_stand.onnx (Rhythmic head nods)"]
+    subgraph ACT ["3. Policy Execution Layer (50Hz Low-Pass Filtered)"]
+        S1 & S2 --> WalkPol["alpha_walking.onnx (Scale 0.9, Lowpass 0.7/0.5)"]
+        S4 --> KickPol["ball_kick_right.onnx (Scale 1.0, 0.5s duration)"]
+        S6 --> StandPol["alpha_stand.onnx (Scale 1.0, Rhythmic nod)"]
     end
 
-    subgraph PLATFORM ["4. Hardware / Simulation Targets"]
-        WalkPol & KickPol & StandPol --> MuJoCoSim["MuJoCo 3D Simulation (scene_soccer.xml)"]
-        WalkPol & KickPol & StandPol --> RealDuck["Microduck Hardware (Rockchip RK3566 /run/robotd.sock)"]
+    subgraph EVAL ["4. Isolated Evaluation & Benchmark"]
+        MuJoCo["MuJoCo Physics Engine"] -. Ground Truth .-> Eval["SoccerEvaluator (Ball distance, contact, goal, fall)"]
     end
 ```
 
 ---
 
-## 🎯 State Machine Lifecycle (FSM)
+## 🎯 State Machine Specification
 
-| State | Trigger Condition | Behavior | Transition Out |
+| State | Perception Trigger | Control Action | Transition Condition |
 | :--- | :--- | :--- | :--- |
-| **`SEARCH_BALL`** | Ball not found in camera view | Rotate slowly in place (`vtheta = 0.45 rad/s`) with head pitched down | Valid ball contour detected (`area > 15`) |
-| **`APPROACH_BALL`** | Ball centroid `(cx, cy)` locked | Compute heading error `err_x = 160 - cx`, visual servo steer with `vx = 0.35 m/s` forward | Reached ball (`dist < 0.22m` or `area > 1800`) |
-| **`ALIGN_KICK`** | Ball in close proximity | Measure duck-to-goal angle, align heading directly with goal center, position ball in front of right foot | Heading error `\|yaw_diff\| < 10°` |
-| **`KICK`** | Alignment complete | Swap policy to `ball_kick_right.onnx`, balance on left foot, sweep right foot back and kick forward (~2.7s) | Kick cycle timer expires |
-| **`GOAL_CHECK`** | Kick complete | Track ball velocity and position relative to goal posts | Ball settles or crosses goal line |
-| **`CELEBRATE`** | Ball crosses line (`x >= 2.75m, \|y\| < 0.4m`) | Display golden GOOOOAL overlay, switch to standing policy and nod head rhythmically | Timer expires, resets to search |
+| **`SEARCH_BALL`** | `ball.visible == False` | In-place yaw spin ($v_{\text{yaw}} = 0.40\text{ rad/s}$) | `ball.visible == True` |
+| **`APPROACH_BALL`** | Ball bearing and estimated distance $Z$ | Visual servoing steering ($v_{\text{yaw}} = -k_p \theta$) and distance-adaptive forward speed ($v_x = \text{clip}(k_d (Z - Z_{\text{target}}), 0.12, 0.35)$) | $Z \le 0.18\text{ m}$ (kicking zone) |
+| **`ALIGN_KICK`** | Ball in kicking zone | Stand firmly, orient heading toward detected goal bearing | Heading alignment within $\pm 8.5^\circ$ |
+| **`KICK`** | Stance settled and aligned | Swap ONNX policy to `ball_kick_right.onnx` for exactly $0.5\text{ s}$ | $t \ge t_{\text{kick}} + 0.5\text{ s}$ |
+| **`GOAL_CHECK`** | Kick finished | Stand upright and observe ball trajectory | Ball enters goal or velocity settles |
+| **`CELEBRATE`** | Evaluator confirms goal | Pitch head up and down rhythmically, play victory sound | Timer expires |
 
 ---
 
-## 🚀 Simulation Quickstart (MuJoCo)
+## 🚀 Simulation Quickstart
 
-### 1. Requirements & Setup
-Ensure you have Python 3.10+ installed, then install dependencies:
-
+### 1. Installation
 ```bash
+git clone https://github.com/toyhank/microduck.git
+cd microduck
 pip install -r requirements.txt
 ```
 
-### 2. Run the 3D Soccer Simulation
-Execute the main simulation script:
-
+### 2. Run the 3D Soccer Simulation (Strict Vision Mode)
 ```bash
-python sim_duck_soccer.py
+# Strict mode: 100% vision, physical contact kicking, no cheating
+python sim_duck_soccer.py --mode strict
+
+# Demo mode (for visual testing with oracle assistance)
+python sim_duck_soccer.py --mode demo
 ```
 
-### 3. Interactive Views
-When launched, two windows will open:
-1. **MuJoCo 3D Viewer**:
-   - Free camera view showing the duck walking on the pitch, balancing on one foot, and kicking the ball into the goal net.
-   - Mouse controls: Right-click drag to rotate, middle-scroll to zoom, left-click drag to pan.
-2. **OpenCV Egocentric HUD View**:
-   - First-person view directly from the duck's head camera.
-   - Overlays real-time bounding boxes (orange for ball, blue for goal), targeting crosshairs, state name, distance, and telemetry data.
+### 3. Run the Automated Benchmark Suite
+Run randomized trials (random ball distance, random initial yaw) to compute quantitative success metrics:
+```bash
+python benchmark.py --trials 10
+```
+
+Example benchmark report:
+```text
+============================================================
+                  BENCHMARK RESULTS
+============================================================
+  Total Trials:               10
+  Ball Detection Rate:        100.0%
+  Approach Success Rate:      90.0%
+  Kick Contact Rate:          80.0%
+  Goal Scoring Rate:          70.0%
+  Mean Time to Kick:          6.45 s
+  Fall Rate:                  0.0%
+============================================================
+```
 
 ---
 
-## 🤖 Real Robot Standalone Deployment
+## 🤖 Real-Robot Onboard Deployment
 
-Microduck contains an onboard **Rockchip RK3566 (Quad-Core 64-bit ARM Cortex-A55 Linux)** computer. The included script [`duck_soccer_onboard.py`](duck_soccer_onboard.py) runs **entirely onboard without needing any external PC or Wi-Fi connection**!
+The script [`duck_soccer_onboard.py`](duck_soccer_onboard.py) runs directly on the Microduck's onboard Rockchip RK3566 Linux SBC:
 
-### 1. How It Works
-- **Vision**: Reads onboard head camera stream `/dev/video0` directly with OpenCV.
-- **Communication**: Interacts with the local daemon `/run/robotd.sock` using standard JSON-RPC 2.0:
-  - Walk: `{"method": "robot.move", "params": {"vx": 0.35, "vy": 0.0, "vtheta": ...}}`
-  - Kick: `{"method": "robot.do", "params": {"skill": "kick_right"}}`
-  - Sound: `{"method": "robot.sound", "params": {"tag": "happy"}}`
+### 1. Protocol Architecture
+- **Camera**: Captures from `/dev/video0` via OpenCV.
+- **Local IPC Socket**: Connects directly to `/run/robotd.sock` over JSON-RPC 2.0.
+  - Continuous velocity control: `notify("robot.move", {"vx": 0.3, "vy": 0.0, "vyaw": ...})`
+  - Discrete skill triggering: `request("robot.do", {"skill": "kick_right"})`
+  - Voice feedback: `notify("robot.sound", {"tag": "chirp"})`
 
-### 2. Step-by-Step Setup
-
-#### Step 1: Copy script to the duck
-Connect your laptop to the duck's Wi-Fi network and transfer the script:
+### 2. Deployment Steps
 ```bash
+# 1. Copy script to the robot
 scp duck_soccer_onboard.py radxa@<DUCK_IP>:~/
-```
 
-#### Step 2: Test run on the robot
-```bash
+# 2. Run on the robot
 ssh radxa@<DUCK_IP>
 python3 duck_soccer_onboard.py
 ```
-
-#### Step 3: Autostart on boot (True standalone autonomy)
-Create a systemd service file on the duck:
-```bash
-sudo systemctl edit --force --full duck-soccer.service
-```
-Paste the following configuration:
-```ini
-[Unit]
-Description=Microduck Autonomous Soccer Onboard System
-After=robotd.service
-Wants=robotd.service
-
-[Service]
-Type=simple
-User=radxa
-WorkingDirectory=/home/radxa
-ExecStart=/usr/bin/python3 /home/radxa/duck_soccer_onboard.py
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-```
-Enable the service:
-```bash
-sudo systemctl enable --now duck-soccer.service
-```
-Now disconnect all cables, turn on the battery, place the duck on the floor with a mini soccer ball, and watch it play soccer completely autonomously!
-
-### 3. Hardware Best Practices
-1. **Ball Selection**: Use a 70 mm, 15–30 g **hollow floorball, plastic ball, or foam mini soccer ball**. Do not use heavy full-size soccer balls to protect the servo gears.
-2. **Braking Buffer**: Due to real-world floor friction, the onboard script pauses (`robot.stop()`) for 0.6 s before triggering `kick_right` to eliminate momentum and ensure solid footing.
-3. **Lighting**: In dimly lit rooms, adjust the HSV thresholds in `duck_soccer_onboard.py` for optimal detection.
 
 ---
 
@@ -177,42 +151,29 @@ Now disconnect all cables, turn on the battery, place the duck on the floor with
 
 ```text
 microduck/
-├── sim_duck_soccer.py        # ⚽ MuJoCo simulation & CV visual servoing loop
-├── duck_soccer_onboard.py    # 🤖 Standalone real-robot onboard script
-├── requirements.txt          # 📦 Python dependencies
+├── sim_duck_soccer.py        # ⚽ Simulation entry point (--mode strict / demo)
+├── benchmark.py              # 🏁 Automated benchmark suite
+├── duck_soccer_onboard.py    # 🤖 Compliant real-robot onboard runner
+├── requirements.txt          # 📦 Dependencies
+├── LICENSE                   # 📄 Apache-2.0 License
+├── NOTICE                    # 📄 Attribution & upstream notices
 ├── README.md                 # 📖 English documentation
 ├── README_zh.md              # 📖 Chinese documentation
 │
-├── microduck_rl/             # 🏟️ MuJoCo robot and pitch assets
-│   └── src/mjlab_microduck/robot/microduck/
-│       ├── scene_soccer.xml  # ⚽ Pitch, goal posts, net, and ball configuration
-│       ├── robot_allcollisions.xml # Duck 15-DOF kinematic collision definition
-│       └── assets/           # 3D meshes (STL) and textures
+├── microduck_soccer/         # 📦 Core Python package
+│   ├── perception/           # Monocular depth and goal detection
+│   ├── control/              # Visual servoing & strict state machine
+│   ├── policy/               # Official robotd-aligned ONNX runner
+│   └── evaluation/           # Isolated metric evaluator
 │
-└── microduck/                # 🧠 Trained reinforcement learning policies
-    └── policies/
-        ├── alpha_walking.onnx    # Official PPO walking policy (61D -> 14D)
-        ├── ball_kick_right.onnx  # Official PPO right-foot kick policy (61D -> 14D)
-        ├── ball_kick_left.onnx   # Official PPO left-foot kick policy (61D -> 14D)
-        └── alpha_stand.onnx      # Official PPO standing balance policy (61D -> 14D)
+├── microduck_rl/             # 🏟️ MuJoCo robot & pitch models (scene_soccer.xml)
+└── microduck/                # 🧠 Trained ONNX locomotion & kicking policies
 ```
 
 ---
 
-## 🗺️ Roadmap
+## 🤝 Acknowledgments & Prior Work
 
-- [x] Front-facing camera ball detection and tracking
-- [x] Visual servoing locomotion towards ball
-- [x] Goal alignment and stance adjustment
-- [x] Dynamic RL kicking execution
-- [x] Standalone real-robot onboard execution script (Rockchip RK3566)
-- [ ] **Goalie Duck Mode**: Implement a goalkeeper duck using vision to dive and save shots.
-- [ ] **2v2 Team Matches**: Enable multi-duck coordination and cooperative passing.
-- [ ] **RKNN NPU Acceleration**: Convert the CV pipeline to run on the onboard Rockchip NPU at 60 FPS.
-
----
-
-## 🤝 Acknowledgments
-
-- **[Pollen Robotics](https://pollen-robotics.com)** & **[Hugging Face](https://huggingface.co)** for creating and open-sourcing the Microduck platform and training policies.
-- **[DeepMind MuJoCo](https://mujoco.org/)** for the physics simulation engine.
+- Builds upon the [Microduck](https://github.com/pollen-robotics/microduck) bipedal platform by **Pollen Robotics / Hugging Face**.
+- Context and inspiration from community works including `quackd` and D-Robotics RDK X5.
+- Powered by [DeepMind MuJoCo](https://mujoco.org/).

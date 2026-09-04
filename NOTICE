@@ -1,0 +1,14 @@
+# Microduck Soccer - Notices and Third-Party Attributions
+
+## Microduck Soccer Project
+Copyright 2026 The Microduck Soccer Authors.
+Licensed under the Apache License, Version 2.0 (the "License").
+
+## Upstream Microduck Platform
+This project builds upon the Microduck bipedal robot platform developed by **Pollen Robotics** (a subsidiary of Hugging Face) and contributors:
+- Microduck Source Code: Apache License, Version 2.0
+  https://github.com/pollen-robotics/microduck
+- Microduck RL & MJCF Models: Apache License, Version 2.0
+  https://github.com/pollen-robotics/microduck_rl
+- Microduck 3D CAD Meshes (STL): Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)
+- Upstream Pre-trained ONNX Policies: Provided by Pollen Robotics for research and development.

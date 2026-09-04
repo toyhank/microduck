@@ -1,0 +1,5 @@
+"""
+Microduck Soccer: Closed-loop Visual Servoing and Autonomous Soccer System.
+"""
+
+__version__ = "1.0.0"
