@@ -39,6 +39,16 @@ MuJoCo simulation under Moon gravity (`-1.62 m/s²`) using a specialized retrain
 .\venv\Scripts\python scratch/test_moon.py
 ```
 
+### 6. Autonomous CV Soccer Simulation (`sim_duck_soccer.py`) **[NEW]**
+Autonomous Microduck robot soccer simulation with computer vision:
+- Uses the egocentric head camera and OpenCV to find the soccer ball and goal.
+- Uses the `alpha_walking.onnx` policy for visual servoing toward the ball.
+- Aligns with the goal and activates `ball_kick_right.onnx` to dynamically kick the ball.
+- Detects goals and triggers a celebration animation!
+```bash
+.\venv\Scripts\python sim_duck_soccer.py
+```
+
 To retrain the lunar walking policy from scratch using GPU in `microduck_rl`:
 ```bash
 cd microduck_rl
