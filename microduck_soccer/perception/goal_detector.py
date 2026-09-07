@@ -26,7 +26,9 @@ class GoalDetector:
         self.focal_length = (self.height / 2.0) / math.tan(self.fovy_rad / 2.0)
 
         # HSV color range for blue goal
-        self.lower_hsv = np.array([100, 140, 50])
+        # The simulated sky is also blue (S ~= 146). Goal paint is much more
+        # saturated; including the sky makes its full-frame box look centered.
+        self.lower_hsv = np.array([100, 180, 50])
         self.upper_hsv = np.array([130, 255, 255])
         self.min_area = 25.0
 
@@ -44,6 +46,8 @@ class GoalDetector:
             return GoalDetection(visible=False)
 
         x, y, w, h = cv2.boundingRect(c)
+        if w >= self.width * .9 or h >= self.height * .9:
+            return GoalDetection(visible=False)
         cx = int(x + w / 2.0)
         cy = int(y + h / 2.0)
 

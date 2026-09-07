@@ -25,6 +25,8 @@ __pycache__/
 # Local archives and scratch files
 archive/
 scratch/
+*.patch
+oracle-seeds-*.json
 
 # Training logs and checkpoints (keep ONNX models, ignore heavy pt/tfevents)
 logs/
@@ -42,3 +44,7 @@ logs/
 Thumbs.db
 .vscode/
 .idea/
+
+# Upstream firmware and RL training submodules (decoupled; assets bundled in assets/)
+microduck/
+microduck_rl/

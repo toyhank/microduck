@@ -15,10 +15,7 @@ Features:
 import socket
 import json
 import time
-import math
-import sys
 import cv2
-import numpy as np
 
 ROBOT_SOCKET = "/run/robotd.sock"
 BALL_DIAMETER_METERS = 0.070  # 70 mm physical ball diameter
@@ -124,103 +121,57 @@ def main():
 
     if not cap.isOpened():
         print("[Error] Failed to open /dev/video0. Check permissions or camera daemon exclusivity.")
+        if duck.sock is not None:
+            duck.sock.close()
         return
 
-    # Focal length for 90-degree FOV: f = (height / 2) / tan(45 deg) = 120 px
-    focal_length = 120.0
+    from microduck_soccer.perception import BallDetector, GoalDetector
+    from microduck_soccer.control import SoccerStateMachine
 
-    state = "SEARCH_BALL"
-    kick_cooldown_end = 0
-
-    print("[Ready] Perception loop running. Searching for the soccer ball...")
-
+    # Use the same perception and state machine as simulation. Camera FOV and
+    # blind-advance duration still require calibration on the physical robot.
+    ball_detector = BallDetector(cam_width, cam_height, fovy_deg=90.0)
+    goal_detector = GoalDetector(cam_width, cam_height, fovy_deg=90.0)
+    controller = SoccerStateMachine()
+    previous_mode = None
+    frame_failures = 0
     try:
         while True:
             ret, frame = cap.read()
             if not ret:
+                duck.stop()
+                previous_mode = "stand"
+                frame_failures += 1
+                if frame_failures >= 5:
+                    raise RuntimeError("Camera stream lost")
+                controller = SoccerStateMachine()
                 time.sleep(0.05)
                 continue
-
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-            # 1. Orange/Red soccer ball detection (HSV: H: 5-25, S: 100-255, V: 70-255)
-            lower_ball = np.array([5, 100, 70])
-            upper_ball = np.array([25, 255, 255])
-            mask_ball = cv2.inRange(hsv, lower_ball, upper_ball)
-            cnts_ball, _ = cv2.findContours(mask_ball, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            ball_found = False
-            ball_cx = None
-            estimated_dist = 999.0
-
-            if cnts_ball:
-                c_ball = max(cnts_ball, key=cv2.contourArea)
-                area = cv2.contourArea(c_ball)
-                if area > 35:  # Noise filtering
-                    (cx_f, cy_f), radius = cv2.minEnclosingCircle(c_ball)
-                    diameter_px = radius * 2.0
-                    if diameter_px > 2.0:
-                        ball_cx = int(cx_f)
-                        # Monocular depth: Z = (f * D) / d
-                        estimated_dist = (focal_length * BALL_DIAMETER_METERS) / diameter_px
-                        ball_found = True
-
-            current_time = time.time()
-
-            # Post-kick cooldown and celebration
-            if state == "KICKING":
-                if current_time >= kick_cooldown_end:
-                    print("🎉 Kick completed! Celebrating victory!")
-                    duck.quack("chirp")
-                    state = "SEARCH_BALL"
-                time.sleep(0.05)
-                continue
-
-            if state == "SEARCH_BALL":
-                if ball_found:
-                    print(f"[State] Ball spotted ({estimated_dist:.2f}m)! Navigating towards ball...")
-                    state = "APPROACH_BALL"
-                else:
-                    # Spin slowly in place to scan surroundings
-                    duck.move(vx=0.0, vy=0.0, vyaw=0.35)
-
-            elif state == "APPROACH_BALL":
-                if ball_found:
-                    # Target bearing: bias slightly right (+12px) for right-foot kick
-                    err_x = 160 - (ball_cx + 12)
-                    cmd_vyaw = float(np.clip((err_x / focal_length) * 1.8, -0.45, 0.45))
-
-                    # When ball reaches lower frame boundary or close range (~0.28m)
-                    if estimated_dist <= 0.28 or (ball_cy is not None and ball_cy >= 225):
-                        print(f"[State] Ball reached terminal threshold ({estimated_dist:.2f}m, cy={ball_cy})! Executing calibrated strike advance...")
-                        state = "TERMINAL_APPROACH"
-                        terminal_end_time = current_time + 1.40
-                    else:
-                        duck.move(vx=0.32, vy=0.04, vyaw=cmd_vyaw)
-                else:
-                    duck.move(vx=0.15, vy=0.0, vyaw=0.0)
-                    time.sleep(0.2)
-                    state = "SEARCH_BALL"
-
-            elif state == "TERMINAL_APPROACH":
-                # Blind dead-reckoning advance into 0.09m strike zone
-                duck.move(vx=0.32, vy=0.03, vyaw=0.0)
-                if current_time >= terminal_end_time:
-                    print("[State] Settling stance before dynamic kick...")
-                    duck.stop()
-                    time.sleep(0.35)  # Eliminate forward momentum
-                    print("⚡ Executing RIGHT-FOOT KICK! GOOOOOAL!")
-                    duck.kick("right")
-                    state = "KICKING"
-                    kick_cooldown_end = current_time + 3.0
-
-            time.sleep(0.08)  # ~12Hz control loop
-
+            frame_failures = 0
+            if frame.shape[:2] != (cam_height, cam_width):
+                frame = cv2.resize(frame, (cam_width, cam_height))
+            state, vx, vy, vyaw, mode, trigger = controller.update(
+                ball_detector.detect(frame), goal_detector.detect(frame), time.monotonic()
+            )
+            if trigger:
+                response = duck.kick("right")
+                if response is None or "error" in response:
+                    raise RuntimeError(f"Kick request failed: {response}")
+                print("Right-foot kick requested; contact/goal not verified.")
+            elif mode == "walk":
+                duck.move(vx=vx, vy=vy, vyaw=vyaw)
+            elif mode == "stand" and previous_mode != "stand":
+                duck.stop()
+            previous_mode = mode
+            time.sleep(0.08)
     except KeyboardInterrupt:
-        print("\nInterrupted by user. Safely stopping Microduck...")
-        duck.stop()
+        print("\nInterrupted by user.")
     finally:
+        duck.stop()
         cap.release()
+        if duck.sock is not None:
+            duck.sock.close()
+
 
 if __name__ == "__main__":
     main()

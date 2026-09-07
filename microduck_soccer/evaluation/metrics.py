@@ -11,6 +11,8 @@ class EpisodeMetrics:
         self.ball_detected = False
         self.approach_success = False
         self.kick_contact = False
+        self.foot_contact = False
+        self.min_foot_ball_distance = float("inf")
         self.goal_scored = False
         self.fallen = False
         self.time_to_kick = 0.0
@@ -26,8 +28,9 @@ class SoccerEvaluator:
         self.foot_geom_id = foot_geom_id
         self.ball_geom_id = ball_geom_id
         self.foot_site_id = foot_site_id
+        self.previous_ball_pos = None
 
-    def evaluate_step(self, d, trunk_body_id, ball_body_id, right_foot_id, metrics: EpisodeMetrics, elapsed_time, ball_qvel_adr=None):
+    def evaluate_step(self, d, trunk_body_id, ball_body_id, right_foot_id, metrics: EpisodeMetrics, elapsed_time, ball_qvel_adr=None, active_mode=None):
         """Monitor physical ground truth purely for logging and benchmark validation."""
         trunk_pos = d.xpos[trunk_body_id]
         ball_pos = d.xpos[ball_body_id]
@@ -46,30 +49,27 @@ class SoccerEvaluator:
         if trunk_pos[2] < 0.06:
             metrics.fallen = True
 
-        # 2. Check kick contact via multiple ground-truth physical channels:
-        # Channel A: Geometric Euclidean foot-to-ball distance < 8 cm
+        # Proximity is diagnostic only. A kick requires an actual foot/ball
+        # contact during the kick policy; walking into the ball is separate.
         foot_dist = float(np.linalg.norm(foot_pos - ball_pos))
-        if foot_dist < 0.08:
-            metrics.kick_contact = True
+        metrics.min_foot_ball_distance = min(metrics.min_foot_ball_distance, foot_dist)
+        if (self.foot_geom_id is not None and self.foot_geom_id >= 0
+                and self.ball_geom_id is not None and self.ball_geom_id >= 0):
+            for c in d.contact[:d.ncon]:
+                if {int(c.geom1), int(c.geom2)} == {self.foot_geom_id, self.ball_geom_id} and c.dist <= 0:
+                    metrics.foot_contact = True
+                    if active_mode in ("kick_right", "kick_left"):
+                        metrics.kick_contact = True
 
-        # Channel B: Physical MuJoCo contact pairs
-        if self.foot_geom_id is not None and self.ball_geom_id is not None and hasattr(d, "ncon"):
-            for c_idx in range(d.ncon):
-                c = d.contact[c_idx]
-                if (c.geom1 == self.foot_geom_id and c.geom2 == self.ball_geom_id) or \
-                   (c.geom1 == self.ball_geom_id and c.geom2 == self.foot_geom_id):
-                    metrics.kick_contact = True
-                    break
-
-        # Channel C: Momentum transfer / ball velocity spike (> 0.20 m/s)
-        if ball_qvel_adr is not None:
-            b_vel = float(np.linalg.norm(d.qvel[ball_qvel_adr:ball_qvel_adr + 3]))
-            if b_vel > 0.20 and foot_dist < 0.18:
-                metrics.kick_contact = True
-
-        # 3. Check goal scored (ball crosses goal x >= 2.75 within post width)
-        if ball_pos[0] >= 2.75 and abs(ball_pos[1] - self.goal_y) < (self.goal_width / 2.0):
-            metrics.goal_scored = True
+        # Require a forward crossing of the goal plane, within the opening.
+        # Interpolate the crossing so substep speed cannot skip a post check.
+        previous = self.previous_ball_pos
+        if previous is not None and previous[0] < self.goal_x <= ball_pos[0]:
+            fraction = (self.goal_x - previous[0]) / (ball_pos[0] - previous[0])
+            crossing = previous + fraction * (ball_pos - previous)
+            if abs(crossing[1] - self.goal_y) < self.goal_width / 2 and 0 <= crossing[2] < 0.35:
+                metrics.goal_scored = True
+        self.previous_ball_pos = ball_pos.copy()
 
         metrics.total_time = elapsed_time
         metrics.final_ball_dist_to_goal = float(np.linalg.norm(ball_pos[0:2] - np.array([self.goal_x, self.goal_y])))

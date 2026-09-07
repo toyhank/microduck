@@ -16,7 +16,7 @@ class VisualServoController:
 
         # Target kick offset: Right foot is at y = -0.042m
         # When approaching the ball for right-foot kick, ball should be slightly right of center
-        self.target_bearing_offset = -0.06  # rad
+        self.target_bearing_offset = 0.08  # rad
 
     def compute_approach_velocity(self, ball_bearing, ball_distance):
         """
@@ -35,6 +35,9 @@ class VisualServoController:
         else:
             vx = np.clip(self.kp_dist * dist_error + self.min_vx, self.min_vx, self.max_vx)
 
+        # Turn before advancing when the ball lies well outside the strike line.
+        if abs(bearing_error) > 0.4:
+            vx = 0.0
         return float(vx), float(vyaw)
 
     def compute_alignment_velocity(self, goal_bearing):

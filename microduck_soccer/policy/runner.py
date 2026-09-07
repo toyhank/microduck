@@ -9,6 +9,10 @@ Features:
 import numpy as np
 import onnxruntime as ort
 
+# Local robot inference does not need platform telemetry. Disable it before
+# creating any sessions (also applies in each benchmark worker process).
+ort.disable_telemetry_events()
+
 DEFAULT_POSE = np.array([
     0.0, -0.0873, -0.4579, -0.0049, 0.4530, 0.3491, 0.3491, 0.0, 0.0,
     0.0, 0.0873, 0.4579, 0.0049, -0.4530
@@ -35,13 +39,13 @@ def quat_rotate_inverse(quat, vec):
 
 class PolicyRunner:
     def __init__(self, walk_path, kick_r_path, kick_l_path=None, stand_path=None):
-        self.session_walk = ort.InferenceSession(walk_path)
-        self.session_kick_r = ort.InferenceSession(kick_r_path)
-        self.session_kick_l = ort.InferenceSession(kick_l_path) if kick_l_path else None
-        self.session_stand = ort.InferenceSession(stand_path) if stand_path else None
-
-        self.input_name = self.session_walk.get_inputs()[0].name
-        self.output_name = self.session_walk.get_outputs()[0].name
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        self.session_walk = ort.InferenceSession(walk_path, sess_options=options)
+        self.session_kick_r = ort.InferenceSession(kick_r_path, sess_options=options)
+        self.session_kick_l = ort.InferenceSession(kick_l_path, sess_options=options) if kick_l_path else None
+        self.session_stand = ort.InferenceSession(stand_path, sess_options=options) if stand_path else None
 
         self.last_action = np.zeros(14, dtype=np.float32)
         self.filtered_target = DEFAULT_POSE.copy()
@@ -81,7 +85,7 @@ class PolicyRunner:
             command_13d
         ]).astype(np.float32).reshape(1, -1)
 
-        raw_action = session.run([self.output_name], {self.input_name: obs})[0].squeeze(0).astype(np.float32)
+        raw_action = session.run([session.get_outputs()[0].name], {session.get_inputs()[0].name: obs})[0].squeeze(0).astype(np.float32)
         self.last_action = raw_action.copy()
 
         # Compute raw target

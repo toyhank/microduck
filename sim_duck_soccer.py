@@ -4,7 +4,7 @@ Microduck Soccer Simulation (MuJoCo)
 Simulator-first closed-loop visual servoing and dynamic bipedal kicking system.
 
 Modes:
-  --mode strict (default): Pure monocular visual servoing without ground truth state cheats.
+  --mode strict (default): Monocular vision + encoder/IMU odometry, no world-state inputs.
                            No ball teleportation, physical dynamic kick, official 0.5s kick duration.
   --mode demo:             Demonstration mode with oracle alignment assistance.
 """
@@ -23,28 +23,38 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from microduck_soccer.perception import BallDetector, GoalDetector
 from microduck_soccer.control import SoccerStateMachine, SoccerState
+from microduck_soccer.control.calibrated_visual import CalibratedVisualSoccerController
 from microduck_soccer.policy import PolicyRunner, DEFAULT_POSE, KICK_DURATION_SEC
 from microduck_soccer.evaluation import SoccerEvaluator, EpisodeMetrics
 
-XML_PATH = "microduck_rl/src/mjlab_microduck/robot/microduck/scene_soccer.xml"
-POLICY_WALK = "microduck/policies/alpha_walking.onnx"
-POLICY_KICK_R = "microduck/policies/ball_kick_right.onnx"
-POLICY_KICK_L = "microduck/policies/ball_kick_left.onnx"
-POLICY_STAND = "microduck/policies/alpha_stand.onnx"
+from microduck_soccer.assets import get_scene_xml_path, get_policy_path
+
+XML_PATH = get_scene_xml_path()
+POLICY_WALK = get_policy_path("alpha_walking.onnx")
+POLICY_KICK_R = get_policy_path("ball_kick_right.onnx")
+POLICY_KICK_L = get_policy_path("ball_kick_left.onnx")
+POLICY_STAND = get_policy_path("alpha_stand.onnx")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Microduck Autonomous Soccer Simulation")
     parser.add_argument("--mode", type=str, default="strict", choices=["strict", "demo"],
                         help="Operation mode: 'strict' (pure vision, no teleport) or 'demo'")
     parser.add_argument("--headless", action="store_true", help="Run without graphical GUI windows")
-    return parser.parse_args()
+    parser.add_argument('--look-before-kick', action='store_true', help='Experimental: look down, confirm ball, restore head, then recheck kick readiness')
+    parser.add_argument("--duration", type=float, help="Stop after this many simulation seconds")
+    parser.add_argument("--terminal-duration", type=float, default=1.52, help="Legacy demo blind advance duration; unused in strict mode")
+    args = parser.parse_args()
+    if args.terminal_duration <= 0 or (args.duration is not None and args.duration <= 0):
+        parser.error("durations must be positive")
+    return args
 
 def main():
     args = parse_args()
 
     print("=" * 65)
     print("   🦆 Microduck Soccer: Closed-Loop Visual Servoing ⚽")
-    print(f"   Mode: {args.mode.upper()} (Strict Vision Closed-Loop)")
+    description = 'Camera + encoders/IMU' if args.mode == 'strict' else 'Assisted demo'
+    print(f"   Mode: {args.mode.upper()} ({description})")
     print("=" * 65)
 
     try:
@@ -61,7 +71,10 @@ def main():
     goal_detector = GoalDetector(cam_width, cam_height, fovy_deg=90.0)
 
     # 2. Control and Policy modules
-    state_machine = SoccerStateMachine(mode=args.mode, kick_duration_sec=KICK_DURATION_SEC)
+    state_machine = SoccerStateMachine(mode=args.mode, kick_duration_sec=KICK_DURATION_SEC,
+                                       terminal_duration_sec=args.terminal_duration)
+    if args.mode == 'strict':
+        state_machine = CalibratedVisualSoccerController(m, look_before_kick=args.look_before_kick)
     policy_runner = PolicyRunner(POLICY_WALK, POLICY_KICK_R, POLICY_KICK_L, POLICY_STAND)
 
     # 3. Independent Evaluator (ground truth only used for evaluation logging, NOT control)
@@ -96,8 +109,8 @@ def main():
         cv2.namedWindow("Microduck Egocentric Vision", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Microduck Egocentric Vision", 640, 480)
 
-    sim_start_time = time.time()
     step_counter = 0
+    reported_goal = False
 
     ball_det = ball_detector.detect(np.zeros((cam_height, cam_width, 3), dtype=np.uint8))
     goal_det = goal_detector.detect(np.zeros((cam_height, cam_width, 3), dtype=np.uint8))
@@ -107,12 +120,12 @@ def main():
     print(f"\n[Running] Policy: 50Hz, Vision: 10Hz, Kick window: {KICK_DURATION_SEC:.1f}s")
 
     try:
-        while True:
+        while args.duration is None or d.time < args.duration:
             if viewer_ctx and not viewer_ctx.is_running():
                 break
 
-            step_start = time.time()
-            elapsed_time = time.time() - sim_start_time
+            step_start = time.monotonic()
+            elapsed_time = float(d.time)
 
             # ====================================================
             # 1. Perception Layer (Runs at 10Hz = every 5 steps)
@@ -147,6 +160,11 @@ def main():
                     cv2.putText(img_bgr, f"Mode: {args.mode.upper()}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
                     if ball_det.visible:
                         cv2.putText(img_bgr, f"Est Ball Dist: {ball_det.distance:.2f}m", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                    if args.mode == 'strict':
+                        loc = state_machine.localizer
+                        source = 'CAMERA' if ball_det.visible else (
+                            f'TRACKED {elapsed_time-loc.ball_seen:.1f}s' if loc.ball_xy is not None else 'SEARCHING')
+                        cv2.putText(img_bgr, f'Ball: {source}', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, .45, (255, 255, 255), 1)
 
                     cv2.drawMarker(img_bgr, (160, 120), (180, 180, 180), cv2.MARKER_CROSS, 12, 1)
 
@@ -163,9 +181,21 @@ def main():
             # ====================================================
             # 2. Control & State Machine (Strict Vision Only)
             # ====================================================
+            adr = m.sensor_adr[imu_ang_vel_id]
+            sensor_ang_vel = d.sensordata[adr:adr+3].copy().astype(np.float32)
+            trunk_quat = d.sensor('orientation').data.copy().astype(np.float32)
+            current_qpos = d.qpos[joint_qpos_indices].copy().astype(np.float32)
+            current_qvel = d.qvel[joint_qvel_indices].copy().astype(np.float32)
+            sensor_inputs = dict(joint_positions=current_qpos, orientation=trunk_quat,
+                                 angular_velocity=sensor_ang_vel, new_frame=step_counter % 5 == 0)
             state, cmd_vx, cmd_vy, cmd_vyaw, active_mode, trigger_kick = state_machine.update(
-                ball_det, goal_det, elapsed_time
+                ball_det, goal_det, elapsed_time, **(sensor_inputs if args.mode == 'strict' else {})
             )
+            if trigger_kick:
+                metrics.approach_success = True
+                if metrics.time_to_kick == 0:
+                    metrics.time_to_kick = elapsed_time
+                print(f'[Kick] t={elapsed_time:.2f}s: stance settled and shot aligned', flush=True)
 
             # In DEMO mode only: allow optional teleport if user specifically requested demo mode
             if args.mode == "demo" and trigger_kick:
@@ -182,13 +212,9 @@ def main():
             # ====================================================
             # 3. Policy Execution (50Hz = every step)
             # ====================================================
-            adr = m.sensor_adr[imu_ang_vel_id]
-            sensor_ang_vel = d.sensordata[adr:adr+3].copy().astype(np.float32)
-            trunk_quat = d.xquat[trunk_base_id].copy().astype(np.float32)
-            current_qpos = d.qpos[joint_qpos_indices].copy().astype(np.float32)
-            current_qvel = d.qvel[joint_qvel_indices].copy().astype(np.float32)
-
             command_13d = np.zeros(13, dtype=np.float32)
+            if args.mode == 'strict':
+                command_13d[3:5] = state_machine.head_command
             if active_mode == "walk":
                 command_13d[0] = cmd_vx
                 command_13d[1] = cmd_vy
@@ -204,29 +230,38 @@ def main():
             # Physics decimation (10 steps of 0.002s = 0.02s / 50Hz)
             for _ in range(10):
                 mujoco.mj_step(m, d)
+                evaluator.evaluate_step(d, trunk_base_id, ball_body_id, foot_site_id, metrics,
+                                        float(d.time), ball_qvel_adr=ball_qvel_adr,
+                                        active_mode=active_mode)
 
             # ====================================================
             # 4. Independent Evaluation (Strictly outside controller)
             # ====================================================
-            evaluator.evaluate_step(d, trunk_base_id, ball_body_id, foot_site_id, metrics, elapsed_time, ball_qvel_adr=ball_qvel_adr)
-            if metrics.goal_scored and not state_machine.goal_scored:
-                state_machine.goal_scored = True
+            if metrics.goal_scored and not reported_goal:
+                reported_goal = True
+                if args.mode == "demo":
+                    state_machine.goal_scored = True
                 print("\n⚽ [EVALUATOR] Goal confirmed! Ball crossed goal line!")
 
             if viewer_ctx:
                 viewer_ctx.sync()
 
             step_counter += 1
-            elapsed = time.time() - step_start
-            if 0.02 - elapsed > 0:
+            elapsed = time.monotonic() - step_start
+            if not args.headless and 0.02 - elapsed > 0:
                 time.sleep(0.02 - elapsed)
 
     except KeyboardInterrupt:
         print("\nSimulation interrupted by user.")
     finally:
+        renderer.close()
+        if viewer_ctx:
+            viewer_ctx.close()
         if not args.headless:
             cv2.destroyAllWindows()
-        print(f"\n[Summary] Episodes completed. Goal Scored: {metrics.goal_scored}, Contact: {metrics.kick_contact}")
+        print(f"\n[Summary] Sim time: {d.time:.2f}s, Goal: {metrics.goal_scored}, "
+              f"Kick contact: {metrics.kick_contact}, Any foot contact: {metrics.foot_contact}, "
+              f"Minimum foot-site distance: {metrics.min_foot_ball_distance:.3f}m")
 
 if __name__ == "__main__":
     main()

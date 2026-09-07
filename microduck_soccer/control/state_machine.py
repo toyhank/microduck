@@ -1,11 +1,12 @@
-"""
-Finite State Machine for Autonomous Soccer Play.
-Supports both STRICT mode (100% pure vision, no ground truth) and DEMO mode.
-"""
+"""Visual approach followed by a bounded, calibrated blind strike advance.
 
-import time
-import math
+The terminal advance is open loop: its duration must be calibrated for the
+camera, walking policy and floor. Simulator ground truth is never read here.
+"""
 import numpy as np
+
+from .visual_servo import VisualServoController
+
 
 class SoccerState:
     SEARCH_BALL = "SEARCH_BALL"
@@ -16,19 +17,25 @@ class SoccerState:
     GOAL_CHECK = "GOAL_CHECK"
     CELEBRATE = "CELEBRATE"
 
+
 class SoccerStateMachine:
-    def __init__(self, mode="strict", kick_duration_sec=0.5, terminal_duration_sec=1.52, settle_duration_sec=0.30):
-        self.mode = mode  # "strict" or "demo"
+    def __init__(self, mode="strict", kick_duration_sec=0.5,
+                 terminal_duration_sec=1.52, settle_duration_sec=0.30,
+                 image_height=240):
+        if min(kick_duration_sec, terminal_duration_sec, settle_duration_sec) <= 0:
+            raise ValueError("Motion durations must be positive")
+        self.mode = mode
         self.state = SoccerState.SEARCH_BALL
         self.kick_duration_sec = kick_duration_sec
-        self.terminal_duration_sec = terminal_duration_sec  # ~76 steps at 50Hz for 0.265m advance
-        self.settle_duration_sec = settle_duration_sec      # ~15 steps at 50Hz to damp momentum
-
-        self.last_ball_time = 0.0
+        self.terminal_duration_sec = terminal_duration_sec
+        self.settle_duration_sec = settle_duration_sec
+        self.image_height = image_height
+        self.servo = VisualServoController(min_vx=0.30)
+        self.last_ball_time = -float("inf")
         self.last_seen_cy = 0
+        self.last_ball_bearing = 0.0
         self.last_goal_bearing = 0.0
         self.has_seen_goal = False
-
         self.terminal_timer = 0.0
         self.kick_timer = 0.0
         self.stabilize_timer = 0.0
@@ -36,124 +43,74 @@ class SoccerStateMachine:
         self.goal_scored = False
 
     def update(self, ball_det, goal_det, current_time, imu_yaw=0.0):
-        """
-        Update the state machine based purely on perception detections.
-        Returns:
-            state: current SoccerState
-            cmd_vx: desired forward velocity
-            cmd_vy: desired lateral strafing velocity
-            cmd_vyaw: desired yaw rate
-            active_policy_mode: "walk", "stand", "kick_right"
-            trigger_kick_now: bool
-        """
-        cmd_vx = 0.0
-        cmd_vy = 0.0
-        cmd_vyaw = 0.0
-        active_policy_mode = "walk"
-        trigger_kick_now = False
+        """Return state, vx, vy, yaw rate, policy and a one-shot kick trigger.
 
-        # Update perception memory
+        In simulation, current_time MUST be MuJoCo's d.time. Hardware callers
+        use a monotonic clock. Goal bearing is telemetry; goal aiming remains
+        a separate, unimplemented behavior.
+        """
+        trigger_kick = False
         if ball_det.visible:
             self.last_ball_time = current_time
             self.last_seen_cy = ball_det.cy
-
+            self.last_ball_bearing = ball_det.bearing
         if goal_det.visible:
             self.last_goal_bearing = goal_det.bearing
             self.has_seen_goal = True
 
-        # State dispatch
+        # Resolve transitions before selecting the policy. In particular,
+        # trigger_kick and the first kick action must occur in the same tick.
         if self.state == SoccerState.SEARCH_BALL:
-            active_policy_mode = "walk"
             if ball_det.visible:
                 self.state = SoccerState.APPROACH_BALL
-            else:
-                # Rotate slowly in place to scan field
-                cmd_vx = 0.0
-                cmd_vy = 0.0
-                cmd_vyaw = 0.40
-
         elif self.state == SoccerState.APPROACH_BALL:
-            active_policy_mode = "walk"
-            if ball_det.visible:
-                # Target bearing: align ball with right foot line-of-sight (+0.08 rad to the right)
-                target_bearing = 0.08
-                err_bearing = ball_det.bearing - target_bearing
-                cmd_vyaw = -float(np.clip(2.0 * err_bearing, -0.45, 0.45))
-                cmd_vx = 0.35
-                # Lateral drift compensation and fine alignment
-                cmd_vy = float(np.clip(0.05 - 1.2 * err_bearing, -0.15, 0.15))
-
-                # Terminal approach trigger: ball reaches the lower boundary of the camera frame
-                if ball_det.cy >= 230:
-                    self.state = SoccerState.TERMINAL_APPROACH
-                    self.terminal_timer = current_time + self.terminal_duration_sec
-            else:
-                # Ball slipped into blind spot under beak while at bottom of frame
-                if self.last_seen_cy >= 210 and (current_time - self.last_ball_time) < 0.8:
-                    self.state = SoccerState.TERMINAL_APPROACH
-                    self.terminal_timer = current_time + (self.terminal_duration_sec - 0.08)
-                elif (current_time - self.last_ball_time) < 0.6:
-                    # Brief occlusion: keep forward momentum
-                    cmd_vx = 0.30
-                    cmd_vy = 0.0
-                    cmd_vyaw = 0.0
-                else:
-                    self.state = SoccerState.SEARCH_BALL
-
+            aligned = abs(self.last_ball_bearing - self.servo.target_bearing_offset) < 0.22
+            at_bottom = ball_det.visible and ball_det.cy >= self.image_height * 230 / 240
+            lost_below = (not ball_det.visible
+                          and self.last_seen_cy >= self.image_height * 210 / 240
+                          and current_time - self.last_ball_time < 0.8)
+            if aligned and (at_bottom or lost_below):
+                self.state = SoccerState.TERMINAL_APPROACH
+                self.terminal_timer = current_time + self.terminal_duration_sec
+            elif not ball_det.visible and current_time - self.last_ball_time >= 0.6:
+                self.state = SoccerState.SEARCH_BALL
         elif self.state == SoccerState.TERMINAL_APPROACH:
-            # Calibrated dead-reckoning advance directly into the 0.09m foot strike zone
-            active_policy_mode = "walk"
-            cmd_vx = 0.35
-            cmd_vy = 0.03
-            cmd_vyaw = 0.0
-
-            if current_time >= self.terminal_timer:
+            if current_time + 1e-9 >= self.terminal_timer:
                 self.state = SoccerState.ALIGN_KICK
                 self.stabilize_timer = current_time + self.settle_duration_sec
-
         elif self.state == SoccerState.ALIGN_KICK:
-            # Settle stance into firm standing pose to eliminate momentum
-            active_policy_mode = "stand"
-            cmd_vx = 0.0
-            cmd_vy = 0.0
-            cmd_vyaw = 0.0
-
-            if current_time >= self.stabilize_timer:
+            if current_time + 1e-9 >= self.stabilize_timer:
                 self.state = SoccerState.KICK
                 self.kick_timer = current_time + self.kick_duration_sec
-                trigger_kick_now = True
-
+                trigger_kick = True
         elif self.state == SoccerState.KICK:
-            active_policy_mode = "kick_right"
-            cmd_vx = 0.0
-            cmd_vy = 0.0
-            cmd_vyaw = 0.0
-
-            if current_time >= self.kick_timer:
+            if current_time + 1e-9 >= self.kick_timer:
                 self.state = SoccerState.GOAL_CHECK
                 self.stabilize_timer = current_time + 1.5
-
         elif self.state == SoccerState.GOAL_CHECK:
-            active_policy_mode = "stand"
-            cmd_vx = 0.0
-            cmd_vy = 0.0
-            cmd_vyaw = 0.0
-
             if self.goal_scored:
                 self.state = SoccerState.CELEBRATE
                 self.celebrate_timer = current_time + 4.0
-            elif current_time >= self.stabilize_timer:
-                # Ball didn't score: re-engage to pursue ball for follow-up strike
+            elif current_time + 1e-9 >= self.stabilize_timer:
                 self.state = SoccerState.SEARCH_BALL
-
         elif self.state == SoccerState.CELEBRATE:
-            active_policy_mode = "stand"
-            cmd_vx = 0.0
-            cmd_vy = 0.0
-            cmd_vyaw = 0.0
-
-            if current_time >= self.celebrate_timer:
+            if current_time + 1e-9 >= self.celebrate_timer:
                 self.state = SoccerState.SEARCH_BALL
                 self.goal_scored = False
 
-        return self.state, cmd_vx, cmd_vy, cmd_vyaw, active_policy_mode, trigger_kick_now
+        vx = vy = vyaw = 0.0
+        mode = "stand"
+        if self.state == SoccerState.SEARCH_BALL:
+            mode, vyaw = "walk", 0.40
+        elif self.state == SoccerState.APPROACH_BALL:
+            mode = "walk"
+            if ball_det.visible:
+                vx, vyaw = self.servo.compute_approach_velocity(ball_det.bearing, ball_det.distance)
+                error = ball_det.bearing - self.servo.target_bearing_offset
+                vy = float(np.clip(0.05 - 1.2 * error, -0.15, 0.15))
+            # An unexplained occlusion is not permission to keep walking.
+        elif self.state == SoccerState.TERMINAL_APPROACH:
+            mode, vx, vy = "walk", 0.35, 0.06
+        elif self.state == SoccerState.KICK:
+            mode = "kick_right"
+        return self.state, vx, vy, vyaw, mode, trigger_kick
