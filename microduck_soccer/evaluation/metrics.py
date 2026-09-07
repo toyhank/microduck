@@ -5,7 +5,11 @@ Strictly isolated from the robot controller to track ground truth metrics.
 
 import numpy as np
 
-from ..field import check_ball_field_status, BallFieldStatus, FIELD_X_MIN, FIELD_X_MAX, FIELD_Y_MIN, FIELD_Y_MAX
+from ..field import (
+    check_ball_field_status, BallFieldStatus,
+    FIELD_X_MIN, FIELD_X_MAX, FIELD_Y_MIN, FIELD_Y_MAX,
+    GOAL_INNER_HALF_WIDTH, GOAL_CROSSBAR_UNDERSIDE,
+)
 
 class EpisodeMetrics:
     def __init__(self, episode_id=0):
@@ -34,6 +38,11 @@ class SoccerEvaluator:
         self.goal_x = goal_x
         self.goal_y = goal_y
         self.goal_width = goal_width
+        if goal_width != 0.8:
+            self.inner_half_width = max(0.1, (goal_width - 0.04) / 2.0)
+        else:
+            self.inner_half_width = GOAL_INNER_HALF_WIDTH
+        self.crossbar_underside = GOAL_CROSSBAR_UNDERSIDE
         self.foot_geom_id = foot_geom_id
         self.ball_geom_id = ball_geom_id
         self.foot_site_id = foot_site_id
@@ -93,22 +102,46 @@ class SoccerEvaluator:
 
         # Check field boundary status (In-Bounds vs Out-of-Bounds vs Goal)
         status = check_ball_field_status(ball_pos)
-        if status == BallFieldStatus.OUT_OF_BOUNDS:
+        if metrics.out_of_bounds:
+            # Once out-of-bounds, the ball is dead; cannot revert to in_bounds
+            metrics.in_bounds = False
+        elif status == BallFieldStatus.OUT_OF_BOUNDS:
             metrics.out_of_bounds = True
             metrics.in_bounds = False
         elif status == BallFieldStatus.IN_BOUNDS:
             metrics.in_bounds = True
 
-        # Require a forward crossing of the goal plane, within the opening.
-        # Interpolate the crossing so substep speed cannot skip a post check.
+        # Require a forward crossing of the goal plane, strictly within the inner opening.
+        # A ball that was already out of bounds, or that crosses outside the opening / over the bar,
+        # CAN NEVER score a goal and is strictly OUT_OF_BOUNDS.
         previous = self.previous_ball_pos
-        if previous is not None and previous[0] < self.goal_x <= ball_pos[0]:
-            fraction = (self.goal_x - previous[0]) / (ball_pos[0] - previous[0])
-            crossing = previous + fraction * (ball_pos - previous)
-            if abs(crossing[1] - self.goal_y) < self.goal_width / 2 and 0 <= crossing[2] < 0.35:
-                metrics.goal_scored = True
-                if metrics.total_kicks > 1:
-                    metrics.rebound_goal = True
+        if previous is not None:
+            # 1. Sideline crossing interpolation: y crosses +1.0 or -1.0
+            if not metrics.out_of_bounds:
+                if (previous[1] <= FIELD_Y_MAX < ball_pos[1]) or (previous[1] >= FIELD_Y_MIN > ball_pos[1]):
+                    metrics.out_of_bounds = True
+                    metrics.in_bounds = False
+                # 2. Backline crossing interpolation: x crosses FIELD_X_MIN (-0.4)
+                elif previous[0] >= FIELD_X_MIN > ball_pos[0]:
+                    metrics.out_of_bounds = True
+                    metrics.in_bounds = False
+
+            # 3. Goal line crossing at x = self.goal_x (2.8m)
+            if previous[0] < self.goal_x <= ball_pos[0]:
+                fraction = (self.goal_x - previous[0]) / (ball_pos[0] - previous[0])
+                crossing = previous + fraction * (ball_pos - previous)
+                is_inside_posts = abs(crossing[1] - self.goal_y) < self.inner_half_width
+                is_under_bar = 0.0 <= crossing[2] <= self.crossbar_underside
+
+                if not metrics.out_of_bounds and not metrics.goal_scored and is_inside_posts and is_under_bar:
+                    metrics.goal_scored = True
+                    if metrics.total_kicks > 1:
+                        metrics.rebound_goal = True
+                elif not is_inside_posts or not is_under_bar:
+                    # Crossed the endline outside the posts (wide shot) or over crossbar -> OUT OF BOUNDS!
+                    metrics.out_of_bounds = True
+                    metrics.in_bounds = False
+
         self.previous_ball_pos = ball_pos.copy()
 
         metrics.total_time = elapsed_time

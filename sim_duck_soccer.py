@@ -221,8 +221,9 @@ def main():
                     # Field boundary & kick count telemetry
                     ball_pos_ground = d.xpos[ball_body_id]
                     field_status = check_ball_field_status(ball_pos_ground)
-                    field_str = "IN BOUNDS" if field_status != BallFieldStatus.OUT_OF_BOUNDS else "OUT OF BOUNDS"
-                    field_color = (0, 255, 120) if field_status != BallFieldStatus.OUT_OF_BOUNDS else (0, 60, 255)
+                    is_oob = metrics.out_of_bounds or (field_status == BallFieldStatus.OUT_OF_BOUNDS)
+                    field_str = "OUT OF BOUNDS" if is_oob else "IN BOUNDS"
+                    field_color = (0, 60, 255) if is_oob else (0, 255, 120)
                     cv2.putText(img_bgr, f"FIELD: {field_str}", (10, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.38, field_color, 1)
 
                     kicks_num = metrics.total_kicks
@@ -231,14 +232,14 @@ def main():
 
                     cv2.drawMarker(img_bgr, (160, 120), (180, 180, 180), cv2.MARKER_CROSS, 10, 1)
 
-                    if state_machine.state == SoccerState.CELEBRATE or metrics.goal_scored:
+                    if metrics.goal_scored and not metrics.out_of_bounds:
                         overlay = img_bgr.copy()
                         cv2.rectangle(overlay, (20, 80), (300, 160), (0, 0, 0), -1)
                         cv2.addWeighted(overlay, 0.65, img_bgr, 0.35, 0, img_bgr)
                         goal_banner = "GOOOOAL! (REBOUND) ⚽🦆" if metrics.rebound_goal or metrics.total_kicks > 1 else "GOOOOAL! ⚽🦆"
                         cv2.putText(img_bgr, goal_banner, (25, 120), cv2.FONT_HERSHEY_DUPLEX, 0.62, (0, 255, 255), 2)
                         cv2.putText(img_bgr, "Microduck Scored!", (70, 148), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
-                    elif field_status == BallFieldStatus.OUT_OF_BOUNDS:
+                    elif is_oob:
                         overlay = img_bgr.copy()
                         cv2.rectangle(overlay, (20, 80), (300, 155), (0, 0, 0), -1)
                         cv2.addWeighted(overlay, 0.65, img_bgr, 0.35, 0, img_bgr)

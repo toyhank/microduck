@@ -158,6 +158,104 @@ class EvaluatorReboundMetricsTests(unittest.TestCase):
         self.assertTrue(metrics.goal_scored)
         self.assertTrue(metrics.rebound_goal)
 
+    def test_ball_crossing_sideline_cannot_subsequently_score_goal(self):
+        evaluator = SoccerEvaluator()
+        metrics = EpisodeMetrics()
+
+        class MockData:
+            xpos = np.array([[0., 0., 0.12], [1.5, 0.5, 0.035]])
+            site_xpos = np.array([[0., 0., 0.035]])
+            ncon = 0
+            contact = []
+
+        d = MockData()
+        # Step 1: In-bounds
+        evaluator.evaluate_step(d, 0, 1, 0, metrics, 0.0)
+        self.assertTrue(metrics.in_bounds)
+        self.assertFalse(metrics.out_of_bounds)
+        self.assertFalse(metrics.goal_scored)
+
+        # Step 2: Crosses sideline at y = 1.05 (Out of Bounds!)
+        d.xpos[1] = [2.0, 1.05, 0.035]
+        evaluator.evaluate_step(d, 0, 1, 0, metrics, 0.5)
+        self.assertTrue(metrics.out_of_bounds)
+        self.assertFalse(metrics.in_bounds)
+        self.assertFalse(metrics.goal_scored)
+
+        # Step 3: Ball rebounds off curb back towards goal opening
+        d.xpos[1] = [2.75, 0.20, 0.035]
+        evaluator.evaluate_step(d, 0, 1, 0, metrics, 1.0)
+        d.xpos[1] = [2.85, 0.20, 0.035]
+        evaluator.evaluate_step(d, 0, 1, 0, metrics, 1.5)
+
+        # Even though ball crossed x=2.8 at y=0.20, it was already out of bounds -> NEVER a goal!
+        self.assertTrue(metrics.out_of_bounds)
+        self.assertFalse(metrics.in_bounds)
+        self.assertFalse(metrics.goal_scored)
+
+    def test_ball_crossing_endline_outside_posts_is_strictly_out_of_bounds(self):
+        evaluator = SoccerEvaluator()
+        metrics = EpisodeMetrics()
+
+        class MockData:
+            xpos = np.array([[0., 0., 0.12], [2.75, 0.39, 0.035]])
+            site_xpos = np.array([[0., 0., 0.035]])
+            ncon = 0
+            contact = []
+
+        d = MockData()
+        # Ball crosses x=2.8 at y=0.39 (outside inner post at 0.38)
+        evaluator.evaluate_step(d, 0, 1, 0, metrics, 0.0)
+        d.xpos[1] = [2.85, 0.39, 0.035]
+        evaluator.evaluate_step(d, 0, 1, 0, metrics, 0.1)
+
+        self.assertTrue(metrics.out_of_bounds)
+        self.assertFalse(metrics.in_bounds)
+        self.assertFalse(metrics.goal_scored)
+
+    def test_ball_crossing_above_crossbar_is_strictly_out_of_bounds(self):
+        evaluator = SoccerEvaluator()
+        metrics = EpisodeMetrics()
+
+        class MockData:
+            xpos = np.array([[0., 0., 0.12], [2.75, 0.0, 0.36]])
+            site_xpos = np.array([[0., 0., 0.035]])
+            ncon = 0
+            contact = []
+
+        d = MockData()
+        evaluator.evaluate_step(d, 0, 1, 0, metrics, 0.0)
+        d.xpos[1] = [2.85, 0.0, 0.36]
+        evaluator.evaluate_step(d, 0, 1, 0, metrics, 0.1)
+
+        self.assertTrue(metrics.out_of_bounds)
+        self.assertFalse(metrics.in_bounds)
+        self.assertFalse(metrics.goal_scored)
+
+    def test_calibrated_visual_controller_does_not_unilaterally_score_goal(self):
+        controller = CalibratedVisualSoccerController(mujoco.MjModel.from_xml_path(get_scene_xml_path()))
+        # Ball position estimate is inside the goal mouth
+        controller.localizer.ball_xy = np.array([2.85, 0.0])
+        controller.localizer.ball_seen = 1.0
+        controller.localizer.goal_xy = np.array([2.8, 0.0])
+        controller.localizer.goal_seen = 1.0
+
+        inputs = dict(joint_positions=DEFAULT_POSE, orientation=np.array([1., 0., 0., 0.]),
+                      angular_velocity=np.zeros(3), new_frame=False)
+        state, vx, vy, vyaw, mode, trig = controller.update(
+            BallDetection(), GoalDetection(), 1.0, **inputs
+        )
+        # Must not have declared a goal internally
+        self.assertFalse(controller.goal_scored)
+        self.assertNotEqual(state, SoccerState.CELEBRATE)
+
+        # Only external confirmation from evaluator sets goal_scored
+        controller.goal_scored = True
+        state2, _, _, _, _, _ = controller.update(
+            BallDetection(), GoalDetection(), 1.1, **inputs
+        )
+        self.assertEqual(state2, SoccerState.CELEBRATE)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -44,7 +44,7 @@ class CalibratedVisualSoccerController:
             self.state = SoccerState.GOAL_CHECK
             return self.state, 0., 0., 0., 'stand', False
 
-        # Goal celebration or field boundary out-of-bounds checks
+        # Goal celebration (confirmed by evaluator) or field boundary out-of-bounds checks
         if self.goal_scored:
             self.state = SoccerState.CELEBRATE
             return self.state, 0., 0., 0., 'stand', False
@@ -54,10 +54,6 @@ class CalibratedVisualSoccerController:
             status = check_ball_field_status(loc.ball_xy)
             if status == BallFieldStatus.OUT_OF_BOUNDS:
                 self.state = SoccerState.OUT_OF_BOUNDS
-                return self.state, 0., 0., 0., 'stand', False
-            elif status == BallFieldStatus.GOAL:
-                self.goal_scored = True
-                self.state = SoccerState.CELEBRATE
                 return self.state, 0., 0., 0., 'stand', False
 
         usable_ball = loc.ball_xy is not None and now-loc.ball_seen < 7.
