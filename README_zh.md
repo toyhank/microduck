@@ -105,11 +105,17 @@ pip install -r requirements.txt
 # 严格纯视觉模式 (默认: 100% 视觉控制，物理踢球，无作弊)
 python sim_duck_soccer.py --mode strict
 
-# 1对1对战模式：加入自主守门鸭 (身穿翡翠绿守门员战袍)
+# 1对1对战模式：自主纯视觉守门鸭 (身穿翡翠绿球衣，机载 10Hz 单目视觉 + 弹道预测拦截，开启双屏 HUD)
 python sim_duck_soccer.py --mode strict --goalkeeper
 
-# 可选参数：限制仿真秒数与盲走推进窗口
-python sim_duck_soccer.py --headless --duration 12 --terminal-duration 1.52
+# 录制 1v1 高清双视角对战视频至 MP4 (1280x480)
+python sim_duck_soccer.py --mode strict --goalkeeper --record match.mp4 --duration 12
+
+# 守门员真值对照模式 (Oracle 基线)
+python sim_duck_soccer.py --mode strict --goalkeeper --gk-mode oracle
+
+# 可选参数：无头高速运行、限制仿真秒数
+python sim_duck_soccer.py --headless --duration 12
 
 # 演示模式 (允许真值对齐辅助，便于调试)
 python sim_duck_soccer.py --mode demo

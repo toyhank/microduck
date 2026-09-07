@@ -28,7 +28,7 @@ from microduck_soccer.policy import PolicyRunner, DEFAULT_POSE, KICK_DURATION_SE
 from microduck_soccer.evaluation import SoccerEvaluator, EpisodeMetrics
 
 from microduck_soccer.assets import get_scene_xml_path, get_goalkeeper_scene_xml_path, get_policy_path
-from microduck_soccer.control.goalkeeper import GoalkeeperController
+from microduck_soccer.control.goalkeeper import GoalkeeperController, VisualGoalkeeperController, GoalkeeperState
 
 XML_PATH = get_scene_xml_path()
 POLICY_WALK = get_policy_path("alpha_walking.onnx")
@@ -45,6 +45,10 @@ def parse_args():
     parser.add_argument("--duration", type=float, help="Stop after this many simulation seconds")
     parser.add_argument("--terminal-duration", type=float, default=1.52, help="Legacy demo blind advance duration; unused in strict mode")
     parser.add_argument("--goalkeeper", action="store_true", help="Add Goalkeeper Microduck to defend the goal")
+    parser.add_argument("--gk-mode", type=str, choices=["visual", "oracle"], default="visual",
+                        help="Goalkeeper control mode: 'visual' (pure monocular vision) or 'oracle' (ground truth)")
+    parser.add_argument("--gk-vision", dest="gk_mode", action="store_const", const="visual",
+                        help="Force goalkeeper to use pure monocular vision (default)")
     parser.add_argument("--record", type=str, help="Save HUD visualization video to MP4 file (e.g. match.mp4)")
     args = parser.parse_args()
     if args.terminal_duration <= 0 or (args.duration is not None and args.duration <= 0):
@@ -113,7 +117,10 @@ def main():
     # Goalkeeper setup
     if args.goalkeeper:
         gk_policy_runner = PolicyRunner(POLICY_WALK, POLICY_KICK_R, POLICY_KICK_L, POLICY_STAND)
-        gk_controller = GoalkeeperController()
+        if args.gk_mode == "visual":
+            gk_controller = VisualGoalkeeperController()
+        else:
+            gk_controller = GoalkeeperController()
         gk_trunk_base_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "gk_trunk_base")
         gk_jnt_id = m.body_jntadr[gk_trunk_base_id]
         gk_qpos_adr = m.jnt_qposadr[gk_jnt_id]
@@ -127,11 +134,16 @@ def main():
         d.qpos[gk_qpos_adr:gk_qpos_adr+3] = [2.65, 0.0, 0.12]
         d.qpos[gk_qpos_adr+3:gk_qpos_adr+7] = [0, 0, 0, 1]
 
+        gk_ball_det = ball_detector.detect(np.zeros((cam_height, cam_width, 3), dtype=np.uint8))
+        gk_mode, gk_vx, gk_vy, gk_vyaw = "stand", 0.0, 0.0, 0.0
+
     mujoco.mj_forward(m, d)
+
+    canvas_w, canvas_h = (1280, 480) if args.goalkeeper else (640, 480)
 
     if not args.headless:
         cv2.namedWindow("Microduck Egocentric Vision", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Microduck Egocentric Vision", 640, 480)
+        cv2.resizeWindow("Microduck Egocentric Vision", canvas_w, canvas_h)
 
     step_counter = 0
     reported_goal = False
@@ -144,8 +156,8 @@ def main():
     video_writer = None
     if args.record:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        video_writer = cv2.VideoWriter(args.record, fourcc, 10.0, (640, 480))
-        print(f"[Recording] Saving match video to: {args.record}")
+        video_writer = cv2.VideoWriter(args.record, fourcc, 10.0, (canvas_w, canvas_h))
+        print(f"[Recording] Saving match video to: {args.record} ({canvas_w}x{canvas_h})")
 
     print(f"\n[Running] Policy: 50Hz, Vision: 10Hz, Kick window: {KICK_DURATION_SEC:.1f}s")
 
@@ -171,34 +183,41 @@ def main():
                 if ball_det.visible:
                     metrics.ball_detected = True
 
+                gk_img_bgr = None
+                if args.goalkeeper:
+                    renderer.update_scene(d, camera="gk_egocentric")
+                    gk_img_rgb = renderer.render()
+                    gk_img_bgr = cv2.cvtColor(gk_img_rgb, cv2.COLOR_RGB2BGR)
+                    if args.gk_mode == "visual":
+                        gk_ball_det = ball_detector.detect(gk_img_bgr)
+
                 # Draw OpenCV visual telemetry overlay
                 if not args.headless or video_writer is not None:
+                    # 1. Striker HUD
                     if ball_det.visible:
                         cv2.circle(img_bgr, (ball_det.cx, ball_det.cy), int(ball_det.radius), (0, 165, 255), 2)
                         cv2.circle(img_bgr, (ball_det.cx, ball_det.cy), 4, (0, 0, 255), -1)
                         cv2.putText(img_bgr, f"BALL ({ball_det.distance:.2f}m, {math.degrees(ball_det.bearing):.1f}deg)",
-                                    (ball_det.cx - 50, ball_det.cy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1)
+                                    (ball_det.cx - 50, ball_det.cy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 255), 1)
 
                     if goal_det.visible:
                         cv2.rectangle(img_bgr, (goal_det.cx - int(goal_det.width/2), goal_det.cy - int(goal_det.height/2)),
                                       (goal_det.cx + int(goal_det.width/2), goal_det.cy + int(goal_det.height/2)), (255, 100, 0), 2)
                         cv2.putText(img_bgr, f"GOAL ({math.degrees(goal_det.bearing):.1f}deg)",
-                                    (goal_det.cx - 30, goal_det.cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 200, 0), 1)
+                                    (goal_det.cx - 30, goal_det.cy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 200, 0), 1)
 
-                    # HUD status
-                    cv2.putText(img_bgr, f"STATE: {state_machine.state}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    cv2.putText(img_bgr, f"Mode: {args.mode.upper()}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+                    striker_label = "STRIKER (ATTACK)" if args.goalkeeper else f"MODE: {args.mode.upper()}"
+                    cv2.putText(img_bgr, f"STATE: {state_machine.state}", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+                    cv2.putText(img_bgr, striker_label, (10, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1)
                     if ball_det.visible:
-                        cv2.putText(img_bgr, f"Est Ball Dist: {ball_det.distance:.2f}m", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                        cv2.putText(img_bgr, f"Est Ball: {ball_det.distance:.2f}m", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1)
                     if args.mode == 'strict':
                         loc = state_machine.localizer
                         source = 'CAMERA' if ball_det.visible else (
                             f'TRACKED {elapsed_time-loc.ball_seen:.1f}s' if loc.ball_xy is not None else 'SEARCHING')
-                        cv2.putText(img_bgr, f'Ball: {source}', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, .45, (255, 255, 255), 1)
-                    if args.goalkeeper:
-                        cv2.putText(img_bgr, f"GK: {gk_controller.state.value}", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 120), 1)
+                        cv2.putText(img_bgr, f'Track: {source}', (10, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1)
 
-                    cv2.drawMarker(img_bgr, (160, 120), (180, 180, 180), cv2.MARKER_CROSS, 12, 1)
+                    cv2.drawMarker(img_bgr, (160, 120), (180, 180, 180), cv2.MARKER_CROSS, 10, 1)
 
                     if state_machine.state == SoccerState.CELEBRATE:
                         overlay = img_bgr.copy()
@@ -207,11 +226,38 @@ def main():
                         cv2.putText(img_bgr, "GOOOOAL! ⚽🦆", (55, 120), cv2.FONT_HERSHEY_DUPLEX, 0.8, (0, 255, 255), 2)
                         cv2.putText(img_bgr, "Microduck Scored!", (70, 148), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
 
+                    # 2. Goalkeeper HUD
+                    if args.goalkeeper and gk_img_bgr is not None:
+                        if args.gk_mode == "visual":
+                            if gk_ball_det.visible:
+                                cv2.circle(gk_img_bgr, (gk_ball_det.cx, gk_ball_det.cy), int(gk_ball_det.radius), (0, 165, 255), 2)
+                                cv2.circle(gk_img_bgr, (gk_ball_det.cx, gk_ball_det.cy), 4, (0, 0, 255), -1)
+                                cv2.putText(gk_img_bgr, f"BALL ({gk_ball_det.distance:.2f}m, {math.degrees(gk_ball_det.bearing):.1f}deg)",
+                                            (gk_ball_det.cx - 50, gk_ball_det.cy - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 255, 255), 1)
+                            cv2.putText(gk_img_bgr, f"GK STATE: {gk_controller.state.value}", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 120), 2)
+                            cv2.putText(gk_img_bgr, "GOALKEEPER (PURE VISION)", (10, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 220, 220), 1)
+                            if gk_ball_det.visible:
+                                cv2.putText(gk_img_bgr, f"Rel Vx: {gk_controller.vx_rel:.2f}m/s", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1)
+                            if gk_controller.state == GoalkeeperState.SAVE_DIVE:
+                                cv2.putText(gk_img_bgr, ">> DIVE INTERCEPT ACTIVE <<", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 255), 2)
+                        else:
+                            cv2.putText(gk_img_bgr, f"GK STATE: {gk_controller.state.value}", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 120), 2)
+                            cv2.putText(gk_img_bgr, "GOALKEEPER (ORACLE)", (10, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1)
+
+                        cv2.drawMarker(gk_img_bgr, (160, 120), (180, 180, 180), cv2.MARKER_CROSS, 10, 1)
+
+                    if args.goalkeeper and gk_img_bgr is not None:
+                        combined_canvas = np.hstack([img_bgr, gk_img_bgr])
+                    else:
+                        combined_canvas = img_bgr
+
+                    display_frame = cv2.resize(combined_canvas, (canvas_w, canvas_h))
+
                     if video_writer is not None:
-                        video_writer.write(cv2.resize(img_bgr, (640, 480)))
+                        video_writer.write(display_frame)
 
                     if not args.headless:
-                        cv2.imshow("Microduck Egocentric Vision", img_bgr)
+                        cv2.imshow("Microduck Egocentric Vision", display_frame)
                         cv2.waitKey(1)
 
             # ====================================================
@@ -264,13 +310,19 @@ def main():
             d.ctrl[:14] = target_qpos
 
             if args.goalkeeper:
-                gk_ball_pos = d.xpos[ball_body_id].copy()
-                gk_ball_vel = d.qvel[ball_qvel_adr:ball_qvel_adr + 3].copy()
-                gk_trunk_pos = d.xpos[gk_trunk_base_id].copy()
+                if args.gk_mode == "visual":
+                    new_frame = (step_counter % 5 == 0)
+                    gk_mode, gk_vx, gk_vy, gk_vyaw = gk_controller.update(
+                        gk_ball_det, elapsed_time, new_frame=new_frame
+                    )
+                else:
+                    gk_ball_pos = d.xpos[ball_body_id].copy()
+                    gk_ball_vel = d.qvel[ball_qvel_adr:ball_qvel_adr + 3].copy()
+                    gk_trunk_pos = d.xpos[gk_trunk_base_id].copy()
 
-                gk_mode, gk_vx, gk_vy, gk_vyaw = gk_controller.update(
-                    gk_ball_pos, gk_ball_vel, gk_trunk_pos, elapsed_time
-                )
+                    gk_mode, gk_vx, gk_vy, gk_vyaw = gk_controller.update(
+                        gk_ball_pos, gk_ball_vel, gk_trunk_pos, elapsed_time
+                    )
 
                 gk_sensor_ang_vel = d.sensordata[gk_imu_adr:gk_imu_adr+3].copy().astype(np.float32)
                 gk_trunk_quat = d.sensor('gk_orientation').data.copy().astype(np.float32)

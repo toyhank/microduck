@@ -33,7 +33,7 @@ from microduck_soccer.policy import PolicyRunner, DEFAULT_POSE, KICK_DURATION_SE
 from microduck_soccer.evaluation import SoccerEvaluator, EpisodeMetrics
 
 from microduck_soccer.assets import get_scene_xml_path, get_goalkeeper_scene_xml_path, get_policy_path
-from microduck_soccer.control.goalkeeper import GoalkeeperController
+from microduck_soccer.control.goalkeeper import GoalkeeperController, VisualGoalkeeperController, GoalkeeperState
 
 XML_PATH = get_scene_xml_path()
 POLICY_WALK = get_policy_path("alpha_walking.onnx")
@@ -43,7 +43,7 @@ POLICY_STAND = get_policy_path("alpha_stand.onnx")
 
 def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
               controller='calibrated', trace=False, default_spawn=False, look_before_kick=False,
-              goalkeeper=False):
+              goalkeeper=False, gk_mode='visual'):
     rng = random.Random(seed)
     xml_path = get_goalkeeper_scene_xml_path() if goalkeeper else XML_PATH
     m = mujoco.MjModel.from_xml_path(xml_path)
@@ -106,7 +106,10 @@ def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
 
         if goalkeeper:
             gk_policy_runner = PolicyRunner(POLICY_WALK, POLICY_KICK_R, POLICY_KICK_L, POLICY_STAND)
-            gk_controller = GoalkeeperController()
+            if gk_mode == "visual":
+                gk_controller = VisualGoalkeeperController()
+            else:
+                gk_controller = GoalkeeperController()
             gk_trunk_base_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "gk_trunk_base")
             gk_jnt_id = m.body_jntadr[gk_trunk_base_id]
             gk_qpos_adr = m.jnt_qposadr[gk_jnt_id]
@@ -119,6 +122,8 @@ def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
             d.qpos[gk_joint_qpos_indices] = DEFAULT_POSE
             d.qpos[gk_qpos_adr:gk_qpos_adr+3] = [2.65, 0.0, 0.12]
             d.qpos[gk_qpos_adr+3:gk_qpos_adr+7] = [0, 0, 0, 1]
+            
+            gk_ball_det = ball_detector.detect(np.zeros((cam_height, cam_width, 3), dtype=np.uint8))
 
         mujoco.mj_forward(m, d)
 
@@ -144,6 +149,12 @@ def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
 
                 if ball_det.visible:
                     metrics.ball_detected = True
+
+                if goalkeeper and gk_mode == "visual":
+                    renderer.update_scene(d, camera="gk_egocentric")
+                    gk_img_rgb = renderer.render()
+                    gk_img_bgr = cv2.cvtColor(gk_img_rgb, cv2.COLOR_RGB2BGR)
+                    gk_ball_det = ball_detector.detect(gk_img_bgr)
 
             # Encoders and IMU orientation are the only non-image control inputs.
             adr = m.sensor_adr[imu_ang_vel_id]
@@ -185,13 +196,19 @@ def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
             d.ctrl[:14] = target_qpos
 
             if goalkeeper:
-                gk_ball_pos = d.xpos[ball_body_id].copy()
-                gk_ball_vel = d.qvel[ball_qvel_adr:ball_qvel_adr + 3].copy()
-                gk_trunk_pos = d.xpos[gk_trunk_base_id].copy()
+                if gk_mode == "visual":
+                    new_frame = (step_counter % 5 == 0)
+                    gk_mode_cmd, gk_vx, gk_vy, gk_vyaw = gk_controller.update(
+                        gk_ball_det, sim_time, new_frame=new_frame
+                    )
+                else:
+                    gk_ball_pos = d.xpos[ball_body_id].copy()
+                    gk_ball_vel = d.qvel[ball_qvel_adr:ball_qvel_adr + 3].copy()
+                    gk_trunk_pos = d.xpos[gk_trunk_base_id].copy()
 
-                gk_mode, gk_vx, gk_vy, gk_vyaw = gk_controller.update(
-                    gk_ball_pos, gk_ball_vel, gk_trunk_pos, sim_time
-                )
+                    gk_mode_cmd, gk_vx, gk_vy, gk_vyaw = gk_controller.update(
+                        gk_ball_pos, gk_ball_vel, gk_trunk_pos, sim_time
+                    )
 
                 gk_sensor_ang_vel = d.sensordata[gk_imu_adr:gk_imu_adr+3].copy().astype(np.float32)
                 gk_trunk_quat = d.sensor('gk_orientation').data.copy().astype(np.float32)
@@ -240,6 +257,10 @@ def main():
     parser.add_argument('--look-before-kick', action='store_true')
     parser.add_argument('--default-spawn', action='store_true', help='Use the GUI initial pose and ball placement')
     parser.add_argument("--goalkeeper", action="store_true", help="Add Goalkeeper Microduck to defend the goal")
+    parser.add_argument("--gk-mode", type=str, choices=["visual", "oracle"], default="visual",
+                        help="Goalkeeper control mode: 'visual' (pure vision) or 'oracle' (ground truth)")
+    parser.add_argument("--gk-vision", dest="gk_mode", action="store_const", const="visual",
+                        help="Force goalkeeper to use pure monocular vision (default)")
     args = parser.parse_args()
     if args.trials <= 0 or args.duration <= 0 or args.terminal_duration <= 0:
         parser.error("trials and durations must be positive")
@@ -247,7 +268,8 @@ def main():
     print("=" * 60)
     print(f"  🏁 Running Microduck Soccer Benchmark ({args.trials} Trials, {args.duration:.1f}s Max)")
     if args.goalkeeper:
-        print("     [Mode: 1-on-1 vs Goalkeeper Duck (守门鸭)]")
+        gk_desc = "Pure Monocular Vision" if args.gk_mode == "visual" else "Ground Truth Oracle"
+        print(f"     [Mode: 1-on-1 vs Goalkeeper Duck ({gk_desc})]")
     print("=" * 60)
 
     results = []
@@ -255,7 +277,7 @@ def main():
         print(f"Trial {i:2d}/{args.trials}... ", end="", flush=True)
         m = run_trial(i, max_duration=args.duration, seed=args.seed + i - 1, terminal_duration=args.terminal_duration,
                       controller=args.controller, trace=args.trace, default_spawn=args.default_spawn,
-                      look_before_kick=args.look_before_kick, goalkeeper=args.goalkeeper)
+                      look_before_kick=args.look_before_kick, goalkeeper=args.goalkeeper, gk_mode=args.gk_mode)
         results.append(m)
         if m.shot_saved:
             status = "SAVED 🧤"

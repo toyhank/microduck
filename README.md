@@ -104,11 +104,17 @@ pip install -r requirements.txt
 # Strict mode: 100% vision, physical contact kicking, no cheating
 python sim_duck_soccer.py --mode strict
 
-# 1-on-1 Match Mode: Add autonomous Goalkeeper Duck (Emerald Green Jersey)
+# 1-on-1 Match Mode: Pure Monocular Vision Goalkeeper (Emerald Green, 10Hz camera + trajectory intercept, dual HUD)
 python sim_duck_soccer.py --mode strict --goalkeeper
 
-# Optional: bounded run and configurable blind advance
-python sim_duck_soccer.py --headless --duration 12 --terminal-duration 1.52
+# Record 1v1 HD dual-vision match video to MP4 (1280x480)
+python sim_duck_soccer.py --mode strict --goalkeeper --record match.mp4 --duration 12
+
+# Goalkeeper ground-truth baseline comparison (Oracle Mode)
+python sim_duck_soccer.py --mode strict --goalkeeper --gk-mode oracle
+
+# Optional: headless high-speed run with bounded duration
+python sim_duck_soccer.py --headless --duration 12
 
 # Demo mode (for visual testing with oracle assistance)
 python sim_duck_soccer.py --mode demo
