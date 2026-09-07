@@ -31,7 +31,7 @@
             <!-- Right Post (Blue) -->
             <geom name="goal_post_right" type="cylinder" size="0.02 0.175" pos="2.8 -0.4 0.175" rgba="0.1 0.35 0.95 1"/>
             <!-- Crossbar (Blue) -->
-            <geom name="goal_crossbar" type="cylinder" size="0.02 0.4" pos="2.8 0 0.35" quat="0.707107 0 0.707107 0" rgba="0.1 0.35 0.95 1"/>
+            <geom name="goal_crossbar" type="cylinder" size="0.02 0.4" pos="2.8 0 0.35" zaxis="0 1 0" rgba="0.1 0.35 0.95 1"/>
             <!-- Goal Banner (Visual Cue for CV) -->
             <geom name="goal_banner" type="box" size="0.01 0.4 0.04" pos="2.8 0 0.40" rgba="0.05 0.3 0.9 1"/>
 

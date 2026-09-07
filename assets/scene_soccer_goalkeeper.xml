@@ -15,6 +15,7 @@
         <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
         <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.15 0.4 0.15" rgb2="0.12 0.35 0.12" markrgb="0.8 0.8 0.8" width="300" height="300" />
         <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.1" />
+        <material name="gk_jersey_material" rgba="0.12 0.72 0.38 1" reflectance="0.2" specular="0.3"/>
     </asset>
 
     <worldbody>
@@ -35,7 +36,7 @@
             <!-- Right Post (Blue) -->
             <geom name="goal_post_right" type="cylinder" size="0.02 0.175" pos="2.8 -0.4 0.175" rgba="0.1 0.35 0.95 1"/>
             <!-- Crossbar (Blue) -->
-            <geom name="goal_crossbar" type="cylinder" size="0.02 0.4" pos="2.8 0 0.35" quat="0.707107 0 0.707107 0" rgba="0.1 0.35 0.95 1"/>
+            <geom name="goal_crossbar" type="cylinder" size="0.02 0.4" pos="2.8 0 0.35" zaxis="0 1 0" rgba="0.1 0.35 0.95 1"/>
             <!-- Goal Banner (Visual Cue for CV) -->
             <geom name="goal_banner" type="box" size="0.01 0.4 0.04" pos="2.8 0 0.40" rgba="0.05 0.3 0.9 1"/>
 
