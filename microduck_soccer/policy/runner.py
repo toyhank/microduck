@@ -63,7 +63,7 @@ class PolicyRunner:
         if active_mode == "walk":
             session = self.session_walk
             scale = WALK_ACTION_SCALE
-        elif active_mode == "kick_right":
+        elif active_mode in ("kick", "kick_right"):
             session = self.session_kick_r
             scale = KICK_ACTION_SCALE
         elif active_mode == "kick_left":

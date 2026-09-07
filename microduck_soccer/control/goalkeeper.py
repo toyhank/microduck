@@ -69,8 +69,8 @@ class GoalkeeperController:
             else:
                 self.state = GoalkeeperState.GUARD_LINE
 
-        # 1. Incoming Shot Detection -> SAVE_DIVE
-        is_shot_incoming = b_vx > 0.25 and b_x > 1.2
+        # 1. Incoming Shot Detection -> SAVE_DIVE / KICK CLEAR
+        is_shot_incoming = b_vx > 0.20 and b_x > 1.2
         if is_shot_incoming:
             self.state = GoalkeeperState.SAVE_DIVE
             # Predict intercept y-coordinate at goal line
@@ -79,19 +79,19 @@ class GoalkeeperController:
             y_target = float(np.clip(y_intercept, -self.post_y + 0.06, self.post_y - 0.06))
 
             err_y = y_target - gk_y
-            # Goalkeeper faces -X, so world +Y is local -Y:
-            # cmd_vy_local = -world_vy
-            if abs(err_y) > 0.04:
-                self.active_mode = "walk"
-                world_vy = float(np.clip(err_y * 2.8, -0.35, 0.35))
-                cmd_vy = -world_vy
-                # Small forward lean / advance to close down angle
-                cmd_vx = 0.08
-            else:
-                # Square up and brace for impact
-                self.active_mode = "stand"
-                cmd_vx = 0.0
-                cmd_vy = 0.0
+
+            # If ball is within 0.55m of goalkeeper, execute clearance kick save!
+            if (self.goal_x - b_x) < 0.55:
+                self.state = GoalkeeperState.CLEAR_BALL
+                self.active_mode = "kick_right" if err_y <= 0.03 else "kick_left"
+                self.kick_start_time = current_time
+                return self.active_mode, 0.0, 0.0, 0.0
+
+            # Rapid lateral movement and forward step
+            self.active_mode = "walk"
+            world_vy = float(np.clip(err_y * 4.0, -0.40, 0.40))
+            cmd_vy = -world_vy
+            cmd_vx = 0.12
 
         # 2. Loose Ball in front of Goalkeeper -> CLEAR_BALL
         elif 2.40 < b_x < 2.65 and abs(b_y - gk_y) < 0.12 and np.linalg.norm(ball_vel[:2]) < 0.20:
@@ -190,7 +190,7 @@ class VisualGoalkeeperController:
             # Camera frame to local goalkeeper frame:
             # optical axis (Z in camera) = forward distance in front of robot
             x_meas = float(ball_det.distance * math.cos(ball_det.bearing))
-            # lateral offset: positive bearing is screen right (world +Y)
+            # lateral offset: positive bearing is screen right (world -Y in goalkeeper orientation)
             y_meas = float(ball_det.distance * math.sin(ball_det.bearing))
 
             # Velocity estimation via filtered finite differences on new frames
@@ -207,35 +207,39 @@ class VisualGoalkeeperController:
                 self.last_y_rel = y_meas
                 self.last_update_time = current_time
 
-            # 1. Clearance Kick: loose ball right in front of goalkeeper
-            if x_meas < 0.25 and abs(y_meas) < 0.14 and abs(self.vx_rel) < 0.30:
-                self.state = GoalkeeperState.CLEAR_BALL
-                self.active_mode = "kick"
-                self.kick_start_time = current_time
-                self.last_cmd_vy = 0.0
-                self.last_update_time = current_time
-                return self.active_mode, 0.0, 0.0, 0.0
-
-            # 2. Shot Incoming Detection -> SAVE_DIVE
-            # Ball approaching fast (vx_rel < -0.22 m/s) and within 1.8m
-            is_shot_incoming = (self.vx_rel < -0.22) and (x_meas < 1.8)
+            # 1. Shot Incoming Detection -> SAVE_DIVE / KICK SAVE
+            # Ball approaching towards goalkeeper (vx_rel < -0.15 m/s)
+            is_shot_incoming = (self.vx_rel < -0.15) and (x_meas < 2.2)
             if is_shot_incoming:
                 self.state = GoalkeeperState.SAVE_DIVE
-                approach_speed = max(0.15, -self.vx_rel)
+                approach_speed = max(0.20, -self.vx_rel)
                 t_reach = max(0.01, min(1.5, x_meas / approach_speed))
                 y_intercept_rel = y_meas + self.vy_rel * t_reach
                 self.predicted_intercept_y = y_intercept_rel
 
-                if abs(y_intercept_rel) > 0.03:
-                    self.active_mode = "walk"
-                    # intercept_rel > 0: ball is on right (+Y), so world_vy > 0 and cmd_vy < 0
-                    world_vy = float(np.clip(y_intercept_rel * 3.0, -0.35, 0.35))
-                    cmd_vy = -world_vy
-                    cmd_vx = 0.06
-                else:
-                    self.active_mode = "stand"
-                    cmd_vx = 0.0
-                    cmd_vy = 0.0
+                # If ball is close (x < 0.55m), execute dynamic kick clearance save
+                if x_meas < 0.55:
+                    self.state = GoalkeeperState.CLEAR_BALL
+                    self.active_mode = "kick_right" if y_intercept_rel <= 0.03 else "kick_left"
+                    self.kick_start_time = current_time
+                    self.last_cmd_vy = 0.0
+                    self.last_update_time = current_time
+                    return self.active_mode, 0.0, 0.0, 0.0
+
+                # Otherwise rapidly step laterally to align with intercept and step forward to cut angle
+                self.active_mode = "walk"
+                world_vy = float(np.clip(y_intercept_rel * 4.0, -0.40, 0.40))
+                cmd_vy = -world_vy
+                cmd_vx = 0.12  # Step forward to close down angle!
+
+            # 2. Loose ball right in front of goalkeeper -> CLEAR_BALL
+            elif x_meas < 0.35 and abs(y_meas) < 0.20:
+                self.state = GoalkeeperState.CLEAR_BALL
+                self.active_mode = "kick_right" if y_meas <= 0.0 else "kick_left"
+                self.kick_start_time = current_time
+                self.last_cmd_vy = 0.0
+                self.last_update_time = current_time
+                return self.active_mode, 0.0, 0.0, 0.0
 
             # 3. Ball Far / Slow -> GUARD_LINE
             else:
@@ -244,7 +248,7 @@ class VisualGoalkeeperController:
                 bearing_err = ball_det.bearing
                 if abs(bearing_err) > 0.035:
                     self.active_mode = "walk"
-                    world_vy = float(np.clip(bearing_err * 0.9, -0.24, 0.24))
+                    world_vy = float(np.clip(bearing_err * 1.2, -0.25, 0.25))
                     cmd_vy = -world_vy
                     cmd_vx = 0.0
                 else:
@@ -253,16 +257,37 @@ class VisualGoalkeeperController:
                     cmd_vy = 0.0
 
         else:
-            # Ball not visible: return towards center of goal line
-            self.state = GoalkeeperState.GUARD_LINE
-            if abs(self.est_gk_y) > 0.05:
-                self.active_mode = "walk"
-                world_vy = float(np.clip(-self.est_gk_y * 1.2, -0.20, 0.20))
-                cmd_vy = -world_vy
+            # Ball in near-ground BLIND ZONE (< 0.4m) during shot arrival!
+            # Extrapolate ballistic trajectory rather than freezing or standing still.
+            dt_blind = current_time - self.ball_seen_time
+            if dt_blind < 0.70 and self.vx_rel < -0.15 and self.last_x_rel is not None and self.last_x_rel < 1.0:
+                x_extrap = self.last_x_rel + self.vx_rel * dt_blind
+                y_extrap = self.last_y_rel + self.vy_rel * dt_blind
+                if x_extrap < 0.50:
+                    # Execute blind-spot kick save!
+                    self.state = GoalkeeperState.CLEAR_BALL
+                    self.active_mode = "kick_right" if y_extrap <= 0.03 else "kick_left"
+                    self.kick_start_time = current_time
+                    self.last_cmd_vy = 0.0
+                    self.last_update_time = current_time
+                    return self.active_mode, 0.0, 0.0, 0.0
+                else:
+                    self.state = GoalkeeperState.SAVE_DIVE
+                    self.active_mode = "walk"
+                    world_vy = float(np.clip(y_extrap * 4.0, -0.40, 0.40))
+                    cmd_vy = -world_vy
+                    cmd_vx = 0.12
             else:
-                self.active_mode = "stand"
-                cmd_vx = 0.0
-                cmd_vy = 0.0
+                # Ball lost or far away: return towards center of goal line
+                self.state = GoalkeeperState.GUARD_LINE
+                if abs(self.est_gk_y) > 0.05:
+                    self.active_mode = "walk"
+                    world_vy = float(np.clip(-self.est_gk_y * 1.2, -0.20, 0.20))
+                    cmd_vy = -world_vy
+                else:
+                    self.active_mode = "stand"
+                    cmd_vx = 0.0
+                    cmd_vy = 0.0
 
         # Respect goal post limits
         if self.est_gk_y >= self.post_y - 0.05 and cmd_vy < 0:

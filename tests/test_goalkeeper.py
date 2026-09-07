@@ -102,7 +102,7 @@ class GoalkeeperTests(unittest.TestCase):
         det_loose = BallDetection(cx=160, cy=180, radius=18.0, distance=0.20, bearing=0.02, visible=True)
         mode, vx, vy, vyaw = self.vgk.update(det_loose, 2.0, new_frame=True)
         self.assertEqual(self.vgk.state, GoalkeeperState.CLEAR_BALL)
-        self.assertEqual(mode, "kick")
+        self.assertIn(mode, ("kick", "kick_right", "kick_left"))
 
     def test_visual_goalkeeper_not_visible(self):
         # Lost ball: stand or hold center

@@ -64,7 +64,7 @@ def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
         if controller == 'calibrated':
             state_machine = CalibratedVisualSoccerController(m, look_before_kick=look_before_kick)
         policy_runner = PolicyRunner(POLICY_WALK, POLICY_KICK_R, POLICY_KICK_L, POLICY_STAND)
-        gk_geom_ids = [i for i in range(m.ngeom) if m.geom(i).name.startswith("gk_")] if goalkeeper else None
+        gk_geom_ids = [i for i in range(m.ngeom) if m.body(m.geom_bodyid[i]).name.startswith("gk_")] if goalkeeper else None
         evaluator = SoccerEvaluator(
             goal_x=2.8, goal_y=0.0, goal_width=0.8,
             foot_geom_id=foot_geom_id, ball_geom_id=ball_geom_id, foot_site_id=foot_site_id,
@@ -120,7 +120,7 @@ def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
             gk_joint_qvel_indices = [int(m.jnt_dofadr[m.actuator_trnid[i, 0]]) for i in range(15, 29)]
 
             d.qpos[gk_joint_qpos_indices] = DEFAULT_POSE
-            d.qpos[gk_qpos_adr:gk_qpos_adr+3] = [2.65, 0.0, 0.12]
+            d.qpos[gk_qpos_adr:gk_qpos_adr+3] = [2.45, 0.0, 0.12]
             d.qpos[gk_qpos_adr+3:gk_qpos_adr+7] = [0, 0, 0, 1]
             
             gk_ball_det = ball_detector.detect(np.zeros((cam_height, cam_width, 3), dtype=np.uint8))
