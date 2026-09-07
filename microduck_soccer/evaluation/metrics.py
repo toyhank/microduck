@@ -14,6 +14,8 @@ class EpisodeMetrics:
         self.foot_contact = False
         self.min_foot_ball_distance = float("inf")
         self.goal_scored = False
+        self.gk_contact = False
+        self.shot_saved = False
         self.fallen = False
         self.time_to_kick = 0.0
         self.total_time = 0.0
@@ -21,13 +23,14 @@ class EpisodeMetrics:
         self.final_ball_dist_to_goal = 0.0
 
 class SoccerEvaluator:
-    def __init__(self, goal_x=2.8, goal_y=0.0, goal_width=0.8, foot_geom_id=None, ball_geom_id=None, foot_site_id=None):
+    def __init__(self, goal_x=2.8, goal_y=0.0, goal_width=0.8, foot_geom_id=None, ball_geom_id=None, foot_site_id=None, gk_geom_ids=None):
         self.goal_x = goal_x
         self.goal_y = goal_y
         self.goal_width = goal_width
         self.foot_geom_id = foot_geom_id
         self.ball_geom_id = ball_geom_id
         self.foot_site_id = foot_site_id
+        self.gk_geom_ids = set(gk_geom_ids) if gk_geom_ids else set()
         self.previous_ball_pos = None
 
     def evaluate_step(self, d, trunk_body_id, ball_body_id, right_foot_id, metrics: EpisodeMetrics, elapsed_time, ball_qvel_adr=None, active_mode=None):
@@ -60,6 +63,16 @@ class SoccerEvaluator:
                     metrics.foot_contact = True
                     if active_mode in ("kick_right", "kick_left"):
                         metrics.kick_contact = True
+
+        # Check goalkeeper contacts
+        if self.gk_geom_ids and self.ball_geom_id is not None and self.ball_geom_id >= 0:
+            for c in d.contact[:d.ncon]:
+                if (int(c.geom1) == self.ball_geom_id and int(c.geom2) in self.gk_geom_ids) or \
+                   (int(c.geom2) == self.ball_geom_id and int(c.geom1) in self.gk_geom_ids):
+                    if c.dist <= 0:
+                        metrics.gk_contact = True
+                        if metrics.kick_contact and not metrics.goal_scored:
+                            metrics.shot_saved = True
 
         # Require a forward crossing of the goal plane, within the opening.
         # Interpolate the crossing so substep speed cannot skip a post check.

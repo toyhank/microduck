@@ -104,7 +104,11 @@ pip install -r requirements.txt
 ```bash
 # 严格纯视觉模式 (默认: 100% 视觉控制，物理踢球，无作弊)
 python sim_duck_soccer.py --mode strict
-# Optional: bounded run and configurable blind advance
+
+# 1对1对战模式：加入自主守门鸭 (身穿翡翠绿守门员战袍)
+python sim_duck_soccer.py --mode strict --goalkeeper
+
+# 可选参数：限制仿真秒数与盲走推进窗口
 python sim_duck_soccer.py --headless --duration 12 --terminal-duration 1.52
 
 # 演示模式 (允许真值对齐辅助，便于调试)
@@ -178,17 +182,19 @@ microduck-vision-soccer/
 ├── README_zh.md              # 📖 中文说明文档
 │
 ├── assets/                   # 🏟️ 彻底解耦的仿真与策略资产库
-│   ├── scene_soccer.xml      # MuJoCo 足球场仿真场景定义
-│   ├── robot_allcollisions.xml # 机器人本体结构与碰撞体
+│   ├── scene_soccer.xml      # MuJoCo 足球场仿真场景定义 (单鸭模式)
+│   ├── scene_soccer_goalkeeper.xml # 双鸭对战场景 (进攻鸭 + 守门鸭)
+│   ├── robot_allcollisions.xml # 进攻鸭机器人本体结构与碰撞体
+│   ├── robot_goalkeeper.xml  # 守门鸭机器人定义 (翡翠绿战袍涂装)
 │   ├── meshes/               # 94 个 STL/part 3D 几何网格
 │   └── policies/             # 独立的 ONNX 运控模型（行走、踢球、站立）
 │
 ├── microduck_soccer/         # 📦 核心算法包
 │   ├── assets.py             # 资产路径自动解析与管理
 │   ├── perception/           # 单目测距与球门检测
-│   ├── control/              # 视觉伺服与严格状态机
+│   ├── control/              # 视觉伺服、严格状态机与守门员控制器
 │   ├── policy/               # 对齐官方 robotd 参数的策略推理器
-│   └── evaluation/           # 独立基准评估器
+│   └── evaluation/           # 独立基准评估器 (进球与扑救统计)
 │
 ├── tests/                    # 🧪 单元回归测试集
 └── validation/               # 📊 验证基准测试报告与数据

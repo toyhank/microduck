@@ -27,7 +27,8 @@ from microduck_soccer.control.calibrated_visual import CalibratedVisualSoccerCon
 from microduck_soccer.policy import PolicyRunner, DEFAULT_POSE, KICK_DURATION_SEC
 from microduck_soccer.evaluation import SoccerEvaluator, EpisodeMetrics
 
-from microduck_soccer.assets import get_scene_xml_path, get_policy_path
+from microduck_soccer.assets import get_scene_xml_path, get_goalkeeper_scene_xml_path, get_policy_path
+from microduck_soccer.control.goalkeeper import GoalkeeperController
 
 XML_PATH = get_scene_xml_path()
 POLICY_WALK = get_policy_path("alpha_walking.onnx")
@@ -43,6 +44,7 @@ def parse_args():
     parser.add_argument('--look-before-kick', action='store_true', help='Experimental: look down, confirm ball, restore head, then recheck kick readiness')
     parser.add_argument("--duration", type=float, help="Stop after this many simulation seconds")
     parser.add_argument("--terminal-duration", type=float, default=1.52, help="Legacy demo blind advance duration; unused in strict mode")
+    parser.add_argument("--goalkeeper", action="store_true", help="Add Goalkeeper Microduck to defend the goal")
     args = parser.parse_args()
     if args.terminal_duration <= 0 or (args.duration is not None and args.duration <= 0):
         parser.error("durations must be positive")
@@ -57,8 +59,9 @@ def main():
     print(f"   Mode: {args.mode.upper()} ({description})")
     print("=" * 65)
 
+    xml_path = get_goalkeeper_scene_xml_path() if args.goalkeeper else XML_PATH
     try:
-        m = mujoco.MjModel.from_xml_path(XML_PATH)
+        m = mujoco.MjModel.from_xml_path(xml_path)
         d = mujoco.MjData(m)
     except Exception as e:
         print(f"Failed to load MuJoCo model: {e}")
@@ -81,9 +84,11 @@ def main():
     foot_site_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, "right_foot")
     foot_geom_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "right_foot_collision")
     ball_geom_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "ball_geom")
+    gk_geom_ids = [i for i in range(m.ngeom) if m.geom(i).name.startswith("gk_")] if args.goalkeeper else None
     evaluator = SoccerEvaluator(
         goal_x=2.8, goal_y=0.0, goal_width=0.8,
-        foot_geom_id=foot_geom_id, ball_geom_id=ball_geom_id, foot_site_id=foot_site_id
+        foot_geom_id=foot_geom_id, ball_geom_id=ball_geom_id, foot_site_id=foot_site_id,
+        gk_geom_ids=gk_geom_ids
     )
     metrics = EpisodeMetrics()
 
@@ -103,6 +108,24 @@ def main():
     d.qpos[joint_qpos_indices] = DEFAULT_POSE
     d.qpos[2] = 0.12  # trunk height
     d.qpos[3:7] = [1, 0, 0, 0]  # identity quaternion
+
+    # Goalkeeper setup
+    if args.goalkeeper:
+        gk_policy_runner = PolicyRunner(POLICY_WALK, POLICY_KICK_R, POLICY_KICK_L, POLICY_STAND)
+        gk_controller = GoalkeeperController()
+        gk_trunk_base_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "gk_trunk_base")
+        gk_jnt_id = m.body_jntadr[gk_trunk_base_id]
+        gk_qpos_adr = m.jnt_qposadr[gk_jnt_id]
+        gk_imu_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "gk_imu_ang_vel")
+        gk_imu_adr = m.sensor_adr[gk_imu_id]
+
+        gk_joint_qpos_indices = [int(m.jnt_qposadr[m.actuator_trnid[i, 0]]) for i in range(15, 29)]
+        gk_joint_qvel_indices = [int(m.jnt_dofadr[m.actuator_trnid[i, 0]]) for i in range(15, 29)]
+
+        d.qpos[gk_joint_qpos_indices] = DEFAULT_POSE
+        d.qpos[gk_qpos_adr:gk_qpos_adr+3] = [2.65, 0.0, 0.12]
+        d.qpos[gk_qpos_adr+3:gk_qpos_adr+7] = [0, 0, 0, 1]
+
     mujoco.mj_forward(m, d)
 
     if not args.headless:
@@ -165,6 +188,8 @@ def main():
                         source = 'CAMERA' if ball_det.visible else (
                             f'TRACKED {elapsed_time-loc.ball_seen:.1f}s' if loc.ball_xy is not None else 'SEARCHING')
                         cv2.putText(img_bgr, f'Ball: {source}', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, .45, (255, 255, 255), 1)
+                    if args.goalkeeper:
+                        cv2.putText(img_bgr, f"GK: {gk_controller.state.value}", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 120), 1)
 
                     cv2.drawMarker(img_bgr, (160, 120), (180, 180, 180), cv2.MARKER_CROSS, 12, 1)
 
@@ -227,6 +252,31 @@ def main():
             )
             d.ctrl[:14] = target_qpos
 
+            if args.goalkeeper:
+                gk_ball_pos = d.xpos[ball_body_id].copy()
+                gk_ball_vel = d.qvel[ball_qvel_adr:ball_qvel_adr + 3].copy()
+                gk_trunk_pos = d.xpos[gk_trunk_base_id].copy()
+
+                gk_mode, gk_vx, gk_vy, gk_vyaw = gk_controller.update(
+                    gk_ball_pos, gk_ball_vel, gk_trunk_pos, elapsed_time
+                )
+
+                gk_sensor_ang_vel = d.sensordata[gk_imu_adr:gk_imu_adr+3].copy().astype(np.float32)
+                gk_trunk_quat = d.sensor('gk_orientation').data.copy().astype(np.float32)
+                gk_current_qpos = d.qpos[gk_joint_qpos_indices].copy().astype(np.float32)
+                gk_current_qvel = d.qvel[gk_joint_qvel_indices].copy().astype(np.float32)
+
+                gk_cmd_13d = np.zeros(13, dtype=np.float32)
+                if gk_mode == "walk":
+                    gk_cmd_13d[0] = gk_vx
+                    gk_cmd_13d[1] = gk_vy
+                    gk_cmd_13d[2] = gk_vyaw
+
+                gk_target_qpos = gk_policy_runner.step(
+                    gk_mode, gk_sensor_ang_vel, gk_trunk_quat, gk_current_qpos, gk_current_qvel, gk_cmd_13d
+                )
+                d.ctrl[15:29] = gk_target_qpos
+
             # Physics decimation (10 steps of 0.002s = 0.02s / 50Hz)
             for _ in range(10):
                 mujoco.mj_step(m, d)
@@ -259,9 +309,12 @@ def main():
             viewer_ctx.close()
         if not args.headless:
             cv2.destroyAllWindows()
-        print(f"\n[Summary] Sim time: {d.time:.2f}s, Goal: {metrics.goal_scored}, "
-              f"Kick contact: {metrics.kick_contact}, Any foot contact: {metrics.foot_contact}, "
-              f"Minimum foot-site distance: {metrics.min_foot_ball_distance:.3f}m")
+        summary_str = (f"\n[Summary] Sim time: {d.time:.2f}s, Goal: {metrics.goal_scored}, "
+                       f"Kick contact: {metrics.kick_contact}, Any foot contact: {metrics.foot_contact}, "
+                       f"Minimum foot-site distance: {metrics.min_foot_ball_distance:.3f}m")
+        if args.goalkeeper:
+            summary_str += f", GK Saved: {metrics.shot_saved}, GK Contact: {metrics.gk_contact}"
+        print(summary_str)
 
 if __name__ == "__main__":
     main()

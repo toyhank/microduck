@@ -1,0 +1,56 @@
+<mujoco model="scene_soccer">
+    <!-- Striker Duck -->
+    <include file="robot_allcollisions.xml" />
+
+    <!-- Goalkeeper Duck (Emerald Green Jersey) -->
+    <include file="robot_goalkeeper.xml" />
+
+    <visual>
+        <headlight diffuse="0.7 0.7 0.7" ambient="0.4 0.4 0.4" specular="0.1 0.1 0.1" />
+        <rgba haze="0.15 0.25 0.35 1" />
+        <global azimuth="160" elevation="-20" />
+    </visual>
+
+    <asset>
+        <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
+        <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.15 0.4 0.15" rgb2="0.12 0.35 0.12" markrgb="0.8 0.8 0.8" width="300" height="300" />
+        <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.1" />
+    </asset>
+
+    <worldbody>
+        <light pos="1.5 0 3.5" dir="0 0 -1" directional="true" />
+        <geom name="floor" size="0 0 0.05" pos="0 0 0" type="plane" material="groundplane" />
+
+        <!-- Soccer Ball (70mm diameter, 15g, orange/red for CV tracking) -->
+        <body name="ball" pos="1.2 0.1 0.035">
+            <freejoint name="ball_free"/>
+            <inertial pos="0 0 0" mass="0.015" diaginertia="1.225e-5 1.225e-5 1.225e-5"/>
+            <geom type="sphere" name="ball_geom" size="0.035" rgba="1.0 0.25 0.0 1.0" friction="0.4 0.005 0.0001"/>
+        </body>
+
+        <!-- Soccer Goal (球门) positioned downfield at x=2.8 -->
+        <body name="soccer_goal" pos="0 0 0">
+            <!-- Left Post (Blue) -->
+            <geom name="goal_post_left" type="cylinder" size="0.02 0.175" pos="2.8 0.4 0.175" rgba="0.1 0.35 0.95 1"/>
+            <!-- Right Post (Blue) -->
+            <geom name="goal_post_right" type="cylinder" size="0.02 0.175" pos="2.8 -0.4 0.175" rgba="0.1 0.35 0.95 1"/>
+            <!-- Crossbar (Blue) -->
+            <geom name="goal_crossbar" type="cylinder" size="0.02 0.4" pos="2.8 0 0.35" quat="0.707107 0 0.707107 0" rgba="0.1 0.35 0.95 1"/>
+            <!-- Goal Banner (Visual Cue for CV) -->
+            <geom name="goal_banner" type="box" size="0.01 0.4 0.04" pos="2.8 0 0.40" rgba="0.05 0.3 0.9 1"/>
+
+            <!-- Goal Net (Stops ball inside the net) -->
+            <!-- Back Net -->
+            <geom name="goal_net_back" type="box" size="0.01 0.4 0.175" pos="3.05 0 0.175" rgba="0.9 0.9 0.9 0.4"/>
+            <!-- Left Net -->
+            <geom name="goal_net_left" type="box" size="0.125 0.01 0.175" pos="2.925 0.4 0.175" rgba="0.9 0.9 0.9 0.4"/>
+            <!-- Right Net -->
+            <geom name="goal_net_right" type="box" size="0.125 0.01 0.175" pos="2.925 -0.4 0.175" rgba="0.9 0.9 0.9 0.4"/>
+            <!-- Net Roof -->
+            <geom name="goal_net_top" type="box" size="0.125 0.4 0.01" pos="2.925 0 0.35" rgba="0.9 0.9 0.9 0.4"/>
+
+            <!-- White Goal Line on ground -->
+            <geom name="goal_line" type="box" size="0.02 0.4 0.001" pos="2.8 0 0.001" rgba="1 1 1 0.8" conaffinity="0" contype="0"/>
+        </body>
+    </worldbody>
+</mujoco>

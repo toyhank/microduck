@@ -103,6 +103,10 @@ pip install -r requirements.txt
 ```bash
 # Strict mode: 100% vision, physical contact kicking, no cheating
 python sim_duck_soccer.py --mode strict
+
+# 1-on-1 Match Mode: Add autonomous Goalkeeper Duck (Emerald Green Jersey)
+python sim_duck_soccer.py --mode strict --goalkeeper
+
 # Optional: bounded run and configurable blind advance
 python sim_duck_soccer.py --headless --duration 12 --terminal-duration 1.52
 
@@ -176,17 +180,19 @@ microduck-vision-soccer/
 ├── README_zh.md              # 📖 Chinese documentation
 │
 ├── assets/                   # 🏟️ Decoupled self-contained simulation assets
-│   ├── scene_soccer.xml      # MuJoCo soccer pitch scene
-│   ├── robot_allcollisions.xml # Robot kinematics, sensors & collision definitions
+│   ├── scene_soccer.xml      # MuJoCo soccer pitch scene (single striker)
+│   ├── scene_soccer_goalkeeper.xml # Dual-duck match scene (striker + goalkeeper)
+│   ├── robot_allcollisions.xml # Striker robot kinematics & collision definitions
+│   ├── robot_goalkeeper.xml  # Goalkeeper robot (Emerald Green Jersey)
 │   ├── meshes/               # 94 STL & part mesh assets
 │   └── policies/             # Standalone ONNX policies (walking, kicks, stand)
 │
 ├── microduck_soccer/         # 📦 Core autonomous soccer package
 │   ├── assets.py             # Centralized asset loader & path resolution
 │   ├── perception/           # Monocular depth and goal detection
-│   ├── control/              # Visual servoing & strict state machine
+│   ├── control/              # Visual servoing, strict FSM & goalkeeper controller
 │   ├── policy/               # Official robotd-aligned ONNX runner
-│   └── evaluation/           # Isolated metric evaluator
+│   └── evaluation/           # Isolated metric evaluator (goals & saves)
 │
 ├── tests/                    # 🧪 Unit test regression suite
 └── validation/               # 📊 Validation benchmark data & reports
