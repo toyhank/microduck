@@ -46,7 +46,48 @@
             <geom name="goal_net_top" type="box" size="0.125 0.4 0.01" pos="2.925 0 0.35" rgba="0.9 0.9 0.9 0.4"/>
 
             <!-- White Goal Line on ground -->
-            <geom name="goal_line" type="box" size="0.02 0.4 0.001" pos="2.8 0 0.001" rgba="1 1 1 0.8" conaffinity="0" contype="0"/>
+            <geom name="goal_line" type="box" size="0.015 0.4 0.001" pos="2.8 0 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+        </body>
+
+        <!-- Pitch Markings (White field boundary lines, purely visual) -->
+        <body name="soccer_pitch_markings" pos="0 0 0">
+            <!-- Left Touchline (y = 1.0, x: -0.4 to 2.8) -->
+            <geom name="line_touch_left" type="box" size="1.6 0.015 0.001" pos="1.2 1.0 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+            <!-- Right Touchline (y = -1.0, x: -0.4 to 2.8) -->
+            <geom name="line_touch_right" type="box" size="1.6 0.015 0.001" pos="1.2 -1.0 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+            <!-- Back Endline (x = -0.4, y: -1.0 to 1.0) -->
+            <geom name="line_end_back" type="box" size="0.015 1.0 0.001" pos="-0.4 0 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+            <!-- Goal Endline Outside Goal (x = 2.8, y: 0.4 to 1.0 and -1.0 to -0.4) -->
+            <geom name="line_end_front_left" type="box" size="0.015 0.3 0.001" pos="2.8 0.7 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+            <geom name="line_end_front_right" type="box" size="0.015 0.3 0.001" pos="2.8 -0.7 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+            <!-- Midfield Line (x = 1.2, y: -1.0 to 1.0) -->
+            <geom name="line_midfield" type="box" size="0.015 1.0 0.001" pos="1.2 0 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+            <!-- Kickoff Spot (Center) -->
+            <geom name="spot_kickoff" type="cylinder" size="0.035 0.001" pos="1.2 0 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+            <!-- Center Circle (Subtle visual ring indicator) -->
+            <geom name="circle_center_disc" type="cylinder" size="0.30 0.0005" pos="1.2 0 0.0006" rgba="1 1 1 0.15" conaffinity="0" contype="0"/>
+            <!-- Penalty Area Front (x = 2.0, y: -0.55 to 0.55) -->
+            <geom name="line_penalty_front" type="box" size="0.015 0.55 0.001" pos="2.0 0 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+            <!-- Penalty Area Left (y = 0.55, x: 2.0 to 2.8) -->
+            <geom name="line_penalty_left" type="box" size="0.4 0.015 0.001" pos="2.4 0.55 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+            <!-- Penalty Area Right (y = -0.55, x: 2.0 to 2.8) -->
+            <geom name="line_penalty_right" type="box" size="0.4 0.015 0.001" pos="2.4 -0.55 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+            <!-- Penalty Spot -->
+            <geom name="spot_penalty" type="cylinder" size="0.03 0.001" pos="2.2 0 0.001" rgba="1 1 1 0.85" conaffinity="0" contype="0"/>
+        </body>
+
+        <!-- Outer Boundary Barriers (低矮防飞出边界挡板, 界外缓冲 25cm, 高度 4cm) -->
+        <body name="soccer_perimeter_curbs" pos="0 0 0">
+            <!-- Left Outer Curb (y = 1.25, x: -0.6 to 3.25) -->
+            <geom name="curb_left" type="box" size="1.925 0.02 0.02" pos="1.325 1.25 0.02" rgba="0.75 0.78 0.82 0.9"/>
+            <!-- Right Outer Curb (y = -1.25, x: -0.6 to 3.25) -->
+            <geom name="curb_right" type="box" size="1.925 0.02 0.02" pos="1.325 -1.25 0.02" rgba="0.75 0.78 0.82 0.9"/>
+            <!-- Back Outer Curb (x = -0.6, y: -1.25 to 1.25) -->
+            <geom name="curb_back" type="box" size="0.02 1.25 0.02" pos="-0.6 0 0.02" rgba="0.75 0.78 0.82 0.9"/>
+            <!-- Behind Goal Outer Curb Left (x = 3.25, y: 0.45 to 1.25) -->
+            <geom name="curb_front_left" type="box" size="0.02 0.40 0.02" pos="3.25 0.85 0.02" rgba="0.75 0.78 0.82 0.9"/>
+            <!-- Behind Goal Outer Curb Right (x = 3.25, y: -1.25 to -0.45) -->
+            <geom name="curb_front_right" type="box" size="0.02 0.40 0.02" pos="3.25 -0.85 0.02" rgba="0.75 0.78 0.82 0.9"/>
         </body>
     </worldbody>
 </mujoco>

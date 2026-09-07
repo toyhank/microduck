@@ -56,6 +56,8 @@ class PoseSoccerController:
             if now < self.deadline or (now < self.deadline + 2.0 and np.linalg.norm(ball_velocity) > .06):
                 return self.state, 0., 0., 0., 'stand', False
             self.state = 'APPROACH'
+            self.positioning_settle = False
+            self.stop_offset = np.zeros(2)
         if self.state == 'SETTLE':
             if now < self.deadline:
                 return self.state, 0., 0., 0., 'stand', False

@@ -304,6 +304,10 @@ def main():
     kick_times = [r.time_to_kick for r in results if r.time_to_kick > 0]
     mean_time_kick = np.mean(kick_times) if kick_times else 0.0
 
+    in_bounds_rate = sum(1 for r in results if r.in_bounds) / n * 100.0
+    rebound_rate = sum(1 for r in results if r.rebound_shots > 0) / n * 100.0
+    rebound_goal_rate = sum(1 for r in results if r.rebound_goal) / n * 100.0
+
     print("\n" + "=" * 60)
     print("                  BENCHMARK RESULTS")
     print("=" * 60)
@@ -314,6 +318,9 @@ def main():
     print(f"  Kick Contact Rate:          {kick_rate:.1f}%")
     print(f"  Goal Scoring Rate:          {goal_rate:.1f}%")
     print(f"  Goals with Kick Contact:   {kick_goal_rate:.1f}%")
+    print(f"  In-Bounds Rate (界内率):    {in_bounds_rate:.1f}%")
+    print(f"  Rebound Attempt Rate (补射):{rebound_rate:.1f}%")
+    print(f"  Rebound Goals (补射破门):   {rebound_goal_rate:.1f}%")
     print(f"  Mean Time to Kick:          {mean_time_kick:.2f} s")
     print(f"  Fall Rate:                  {fall_rate:.1f}%")
     if args.goalkeeper:

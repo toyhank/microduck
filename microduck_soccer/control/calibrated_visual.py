@@ -43,8 +43,28 @@ class CalibratedVisualSoccerController:
         if self.motion.state == 'WAIT_BALL' and now < self.motion.deadline:
             self.state = SoccerState.GOAL_CHECK
             return self.state, 0., 0., 0., 'stand', False
+
+        # Goal celebration or field boundary out-of-bounds checks
+        if self.goal_scored:
+            self.state = SoccerState.CELEBRATE
+            return self.state, 0., 0., 0., 'stand', False
+
+        if loc.ball_xy is not None:
+            from ..field import check_ball_field_status, BallFieldStatus
+            status = check_ball_field_status(loc.ball_xy)
+            if status == BallFieldStatus.OUT_OF_BOUNDS:
+                self.state = SoccerState.OUT_OF_BOUNDS
+                return self.state, 0., 0., 0., 'stand', False
+            elif status == BallFieldStatus.GOAL:
+                self.goal_scored = True
+                self.state = SoccerState.CELEBRATE
+                return self.state, 0., 0., 0., 'stand', False
+
         usable_ball = loc.ball_xy is not None and now-loc.ball_seen < 7.
-        usable_goal = loc.goal_xy is not None and now-loc.goal_seen < 1.5
+        has_goal = loc.goal_xy is not None
+        is_aiming = (self.motion.state == 'SETTLE')
+        usable_goal = has_goal and (now - loc.goal_seen < 1.5 if is_aiming else now - loc.goal_seen < 20.0)
+
         if self.motion.state != 'KICK' and not (usable_ball and usable_goal):
             self.state = SoccerState.SEARCH_BALL
             if now < 1.:
@@ -55,6 +75,7 @@ class CalibratedVisualSoccerController:
         result = self.motion.update(now, loc.xy, loc.yaw, loc.velocity,
                                     float(np.linalg.norm(angular_velocity)),
                                     loc.ball_xy, loc.ball_velocity, loc.goal_xy,
+                                    scored=self.goal_scored,
                                     foot_clearance=loc.foot_clearance())
         if result[-1] and self.look_before_kick and now > self.look_confirmed_until:
             # The navigation controller requested a kick, but no kick action
@@ -70,7 +91,7 @@ class CalibratedVisualSoccerController:
             return self.state, 0., 0., 0., 'stand', False
         names = {'APPROACH': SoccerState.APPROACH_BALL,
                  'SETTLE': SoccerState.ALIGN_KICK, 'KICK': SoccerState.KICK,
-                 'WAIT_BALL': SoccerState.GOAL_CHECK}
+                 'WAIT_BALL': SoccerState.GOAL_CHECK, 'DONE': SoccerState.CELEBRATE}
         self.state = names.get(result[0], result[0])
         return (self.state, *result[1:])
 

@@ -29,6 +29,7 @@ from microduck_soccer.evaluation import SoccerEvaluator, EpisodeMetrics
 
 from microduck_soccer.assets import get_scene_xml_path, get_goalkeeper_scene_xml_path, get_policy_path
 from microduck_soccer.control.goalkeeper import GoalkeeperController, VisualGoalkeeperController, GoalkeeperState
+from microduck_soccer.field import check_ball_field_status, BallFieldStatus
 
 XML_PATH = get_scene_xml_path()
 POLICY_WALK = get_policy_path("alpha_walking.onnx")
@@ -217,14 +218,32 @@ def main():
                             f'TRACKED {elapsed_time-loc.ball_seen:.1f}s' if loc.ball_xy is not None else 'SEARCHING')
                         cv2.putText(img_bgr, f'Track: {source}', (10, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1)
 
+                    # Field boundary & kick count telemetry
+                    ball_pos_ground = d.xpos[ball_body_id]
+                    field_status = check_ball_field_status(ball_pos_ground)
+                    field_str = "IN BOUNDS" if field_status != BallFieldStatus.OUT_OF_BOUNDS else "OUT OF BOUNDS"
+                    field_color = (0, 255, 120) if field_status != BallFieldStatus.OUT_OF_BOUNDS else (0, 60, 255)
+                    cv2.putText(img_bgr, f"FIELD: {field_str}", (10, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.38, field_color, 1)
+
+                    kicks_num = metrics.total_kicks
+                    kick_lbl = f"SHOT: #{kicks_num} (REBOUND / 补射)" if kicks_num > 1 else (f"SHOT: #{kicks_num}" if kicks_num == 1 else "SHOT: PRE-KICK")
+                    cv2.putText(img_bgr, kick_lbl, (10, 114), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 200, 100), 1)
+
                     cv2.drawMarker(img_bgr, (160, 120), (180, 180, 180), cv2.MARKER_CROSS, 10, 1)
 
-                    if state_machine.state == SoccerState.CELEBRATE:
+                    if state_machine.state == SoccerState.CELEBRATE or metrics.goal_scored:
                         overlay = img_bgr.copy()
-                        cv2.rectangle(overlay, (30, 80), (290, 160), (0, 0, 0), -1)
-                        cv2.addWeighted(overlay, 0.6, img_bgr, 0.4, 0, img_bgr)
-                        cv2.putText(img_bgr, "GOOOOAL! ⚽🦆", (55, 120), cv2.FONT_HERSHEY_DUPLEX, 0.8, (0, 255, 255), 2)
+                        cv2.rectangle(overlay, (20, 80), (300, 160), (0, 0, 0), -1)
+                        cv2.addWeighted(overlay, 0.65, img_bgr, 0.35, 0, img_bgr)
+                        goal_banner = "GOOOOAL! (REBOUND) ⚽🦆" if metrics.rebound_goal or metrics.total_kicks > 1 else "GOOOOAL! ⚽🦆"
+                        cv2.putText(img_bgr, goal_banner, (25, 120), cv2.FONT_HERSHEY_DUPLEX, 0.62, (0, 255, 255), 2)
                         cv2.putText(img_bgr, "Microduck Scored!", (70, 148), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+                    elif field_status == BallFieldStatus.OUT_OF_BOUNDS:
+                        overlay = img_bgr.copy()
+                        cv2.rectangle(overlay, (20, 80), (300, 155), (0, 0, 0), -1)
+                        cv2.addWeighted(overlay, 0.65, img_bgr, 0.35, 0, img_bgr)
+                        cv2.putText(img_bgr, "OUT OF BOUNDS!", (35, 115), cv2.FONT_HERSHEY_DUPLEX, 0.65, (0, 165, 255), 2)
+                        cv2.putText(img_bgr, "Ball crossed boundary line", (45, 140), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1)
 
                     # 2. Goalkeeper HUD
                     if args.goalkeeper and gk_img_bgr is not None:
@@ -352,9 +371,9 @@ def main():
             # ====================================================
             if metrics.goal_scored and not reported_goal:
                 reported_goal = True
-                if args.mode == "demo":
-                    state_machine.goal_scored = True
-                print("\n⚽ [EVALUATOR] Goal confirmed! Ball crossed goal line!")
+                state_machine.goal_scored = True
+                rebound_note = " (REBOUND GOAL! / 补射进球)" if metrics.rebound_goal or metrics.total_kicks > 1 else ""
+                print(f"\n⚽ [EVALUATOR] Goal confirmed! Ball crossed goal line!{rebound_note}")
 
             if viewer_ctx:
                 viewer_ctx.sync()
@@ -376,6 +395,8 @@ def main():
         if not args.headless:
             cv2.destroyAllWindows()
         summary_str = (f"\n[Summary] Sim time: {d.time:.2f}s, Goal: {metrics.goal_scored}, "
+                       f"Total Kicks: {metrics.total_kicks}, Rebound Shots: {metrics.rebound_shots}, "
+                       f"In-Bounds: {metrics.in_bounds}, Out-of-Bounds: {metrics.out_of_bounds}, "
                        f"Kick contact: {metrics.kick_contact}, Any foot contact: {metrics.foot_contact}, "
                        f"Minimum foot-site distance: {metrics.min_foot_ball_distance:.3f}m")
         if args.goalkeeper:

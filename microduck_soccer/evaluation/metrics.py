@@ -5,6 +5,8 @@ Strictly isolated from the robot controller to track ground truth metrics.
 
 import numpy as np
 
+from ..field import check_ball_field_status, BallFieldStatus, FIELD_X_MIN, FIELD_X_MAX, FIELD_Y_MIN, FIELD_Y_MAX
+
 class EpisodeMetrics:
     def __init__(self, episode_id=0):
         self.episode_id = episode_id
@@ -17,6 +19,11 @@ class EpisodeMetrics:
         self.gk_contact = False
         self.shot_saved = False
         self.fallen = False
+        self.out_of_bounds = False
+        self.in_bounds = True
+        self.total_kicks = 0
+        self.rebound_shots = 0
+        self.rebound_goal = False
         self.time_to_kick = 0.0
         self.total_time = 0.0
         self.initial_ball_dist = 0.0
@@ -32,6 +39,7 @@ class SoccerEvaluator:
         self.foot_site_id = foot_site_id
         self.gk_geom_ids = set(gk_geom_ids) if gk_geom_ids else set()
         self.previous_ball_pos = None
+        self.previous_active_mode = None
 
     def evaluate_step(self, d, trunk_body_id, ball_body_id, right_foot_id, metrics: EpisodeMetrics, elapsed_time, ball_qvel_adr=None, active_mode=None):
         """Monitor physical ground truth purely for logging and benchmark validation."""
@@ -74,6 +82,23 @@ class SoccerEvaluator:
                         if metrics.kick_contact and not metrics.goal_scored:
                             metrics.shot_saved = True
 
+        # Track kicks and rebounds
+        is_kick_mode = active_mode in ("kick_right", "kick_left")
+        was_kick_mode = self.previous_active_mode in ("kick_right", "kick_left")
+        if is_kick_mode and not was_kick_mode:
+            metrics.total_kicks += 1
+            if metrics.total_kicks > 1:
+                metrics.rebound_shots += 1
+        self.previous_active_mode = active_mode
+
+        # Check field boundary status (In-Bounds vs Out-of-Bounds vs Goal)
+        status = check_ball_field_status(ball_pos)
+        if status == BallFieldStatus.OUT_OF_BOUNDS:
+            metrics.out_of_bounds = True
+            metrics.in_bounds = False
+        elif status == BallFieldStatus.IN_BOUNDS:
+            metrics.in_bounds = True
+
         # Require a forward crossing of the goal plane, within the opening.
         # Interpolate the crossing so substep speed cannot skip a post check.
         previous = self.previous_ball_pos
@@ -82,6 +107,8 @@ class SoccerEvaluator:
             crossing = previous + fraction * (ball_pos - previous)
             if abs(crossing[1] - self.goal_y) < self.goal_width / 2 and 0 <= crossing[2] < 0.35:
                 metrics.goal_scored = True
+                if metrics.total_kicks > 1:
+                    metrics.rebound_goal = True
         self.previous_ball_pos = ball_pos.copy()
 
         metrics.total_time = elapsed_time

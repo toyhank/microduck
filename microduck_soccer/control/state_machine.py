@@ -16,6 +16,7 @@ class SoccerState:
     KICK = "KICK"
     GOAL_CHECK = "GOAL_CHECK"
     CELEBRATE = "CELEBRATE"
+    OUT_OF_BOUNDS = "OUT_OF_BOUNDS"
 
 
 class SoccerStateMachine:
