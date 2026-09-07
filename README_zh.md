@@ -95,8 +95,8 @@ flowchart TD
 
 ### 1. 环境准备
 ```bash
-git clone https://github.com/toyhank/microduck.git
-cd microduck
+git clone https://github.com/toyhank/microduck-vision-soccer.git
+cd microduck-vision-soccer
 pip install -r requirements.txt
 ```
 

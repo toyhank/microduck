@@ -94,8 +94,8 @@ Because the forward-facing egocentric camera cannot see objects directly beneath
 
 ### 1. Installation
 ```bash
-git clone https://github.com/toyhank/microduck.git
-cd microduck
+git clone https://github.com/toyhank/microduck-vision-soccer.git
+cd microduck-vision-soccer
 pip install -r requirements.txt
 ```
 
