@@ -45,6 +45,7 @@ def parse_args():
     parser.add_argument("--duration", type=float, help="Stop after this many simulation seconds")
     parser.add_argument("--terminal-duration", type=float, default=1.52, help="Legacy demo blind advance duration; unused in strict mode")
     parser.add_argument("--goalkeeper", action="store_true", help="Add Goalkeeper Microduck to defend the goal")
+    parser.add_argument("--record", type=str, help="Save HUD visualization video to MP4 file (e.g. match.mp4)")
     args = parser.parse_args()
     if args.terminal_duration <= 0 or (args.duration is not None and args.duration <= 0):
         parser.error("durations must be positive")
@@ -140,6 +141,12 @@ def main():
 
     viewer_ctx = mujoco.viewer.launch_passive(m, d) if not args.headless else None
 
+    video_writer = None
+    if args.record:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        video_writer = cv2.VideoWriter(args.record, fourcc, 10.0, (640, 480))
+        print(f"[Recording] Saving match video to: {args.record}")
+
     print(f"\n[Running] Policy: 50Hz, Vision: 10Hz, Kick window: {KICK_DURATION_SEC:.1f}s")
 
     try:
@@ -165,7 +172,7 @@ def main():
                     metrics.ball_detected = True
 
                 # Draw OpenCV visual telemetry overlay
-                if not args.headless:
+                if not args.headless or video_writer is not None:
                     if ball_det.visible:
                         cv2.circle(img_bgr, (ball_det.cx, ball_det.cy), int(ball_det.radius), (0, 165, 255), 2)
                         cv2.circle(img_bgr, (ball_det.cx, ball_det.cy), 4, (0, 0, 255), -1)
@@ -200,8 +207,12 @@ def main():
                         cv2.putText(img_bgr, "GOOOOAL! ⚽🦆", (55, 120), cv2.FONT_HERSHEY_DUPLEX, 0.8, (0, 255, 255), 2)
                         cv2.putText(img_bgr, "Microduck Scored!", (70, 148), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
 
-                    cv2.imshow("Microduck Egocentric Vision", img_bgr)
-                    cv2.waitKey(1)
+                    if video_writer is not None:
+                        video_writer.write(cv2.resize(img_bgr, (640, 480)))
+
+                    if not args.headless:
+                        cv2.imshow("Microduck Egocentric Vision", img_bgr)
+                        cv2.waitKey(1)
 
             # ====================================================
             # 2. Control & State Machine (Strict Vision Only)
@@ -305,6 +316,9 @@ def main():
         print("\nSimulation interrupted by user.")
     finally:
         renderer.close()
+        if video_writer is not None:
+            video_writer.release()
+            print(f"[Recording] Match video cleanly saved to {args.record}")
         if viewer_ctx:
             viewer_ctx.close()
         if not args.headless:
