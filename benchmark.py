@@ -32,7 +32,8 @@ from microduck_soccer.control.calibrated_visual import CalibratedVisualSoccerCon
 from microduck_soccer.policy import PolicyRunner, DEFAULT_POSE, KICK_DURATION_SEC
 from microduck_soccer.evaluation import SoccerEvaluator, EpisodeMetrics
 
-from microduck_soccer.assets import get_scene_xml_path, get_policy_path
+from microduck_soccer.assets import get_scene_xml_path, get_goalkeeper_scene_xml_path, get_policy_path
+from microduck_soccer.control.goalkeeper import GoalkeeperController
 
 XML_PATH = get_scene_xml_path()
 POLICY_WALK = get_policy_path("alpha_walking.onnx")
@@ -41,9 +42,11 @@ POLICY_KICK_L = get_policy_path("ball_kick_left.onnx")
 POLICY_STAND = get_policy_path("alpha_stand.onnx")
 
 def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
-              controller='calibrated', trace=False, default_spawn=False, look_before_kick=False):
+              controller='calibrated', trace=False, default_spawn=False, look_before_kick=False,
+              goalkeeper=False):
     rng = random.Random(seed)
-    m = mujoco.MjModel.from_xml_path(XML_PATH)
+    xml_path = get_goalkeeper_scene_xml_path() if goalkeeper else XML_PATH
+    m = mujoco.MjModel.from_xml_path(xml_path)
     d = mujoco.MjData(m)
 
     cam_width, cam_height = 320, 240
@@ -61,9 +64,11 @@ def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
         if controller == 'calibrated':
             state_machine = CalibratedVisualSoccerController(m, look_before_kick=look_before_kick)
         policy_runner = PolicyRunner(POLICY_WALK, POLICY_KICK_R, POLICY_KICK_L, POLICY_STAND)
+        gk_geom_ids = [i for i in range(m.ngeom) if m.geom(i).name.startswith("gk_")] if goalkeeper else None
         evaluator = SoccerEvaluator(
             goal_x=2.8, goal_y=0.0, goal_width=0.8,
-            foot_geom_id=foot_geom_id, ball_geom_id=ball_geom_id, foot_site_id=foot_site_id
+            foot_geom_id=foot_geom_id, ball_geom_id=ball_geom_id, foot_site_id=foot_site_id,
+            gk_geom_ids=gk_geom_ids
         )
         metrics = EpisodeMetrics(episode_id=trial_id)
 
@@ -98,6 +103,23 @@ def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
             rand_bx, rand_by = 1.2, .1
         d.qpos[ball_qpos_adr:ball_qpos_adr + 7] = [rand_bx, rand_by, 0.035, 1, 0, 0, 0]
         d.qvel[ball_qvel_adr:ball_qvel_adr + 6] = 0.0
+
+        if goalkeeper:
+            gk_policy_runner = PolicyRunner(POLICY_WALK, POLICY_KICK_R, POLICY_KICK_L, POLICY_STAND)
+            gk_controller = GoalkeeperController()
+            gk_trunk_base_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "gk_trunk_base")
+            gk_jnt_id = m.body_jntadr[gk_trunk_base_id]
+            gk_qpos_adr = m.jnt_qposadr[gk_jnt_id]
+            gk_imu_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "gk_imu_ang_vel")
+            gk_imu_adr = m.sensor_adr[gk_imu_id]
+
+            gk_joint_qpos_indices = [int(m.jnt_qposadr[m.actuator_trnid[i, 0]]) for i in range(15, 29)]
+            gk_joint_qvel_indices = [int(m.jnt_dofadr[m.actuator_trnid[i, 0]]) for i in range(15, 29)]
+
+            d.qpos[gk_joint_qpos_indices] = DEFAULT_POSE
+            d.qpos[gk_qpos_adr:gk_qpos_adr+3] = [2.65, 0.0, 0.12]
+            d.qpos[gk_qpos_adr+3:gk_qpos_adr+7] = [0, 0, 0, 1]
+
         mujoco.mj_forward(m, d)
 
         metrics.initial_ball_dist = math.sqrt(rand_bx**2 + rand_by**2)
@@ -162,6 +184,31 @@ def run_trial(trial_id, max_duration=12.0, seed=None, terminal_duration=1.52,
             )
             d.ctrl[:14] = target_qpos
 
+            if goalkeeper:
+                gk_ball_pos = d.xpos[ball_body_id].copy()
+                gk_ball_vel = d.qvel[ball_qvel_adr:ball_qvel_adr + 3].copy()
+                gk_trunk_pos = d.xpos[gk_trunk_base_id].copy()
+
+                gk_mode, gk_vx, gk_vy, gk_vyaw = gk_controller.update(
+                    gk_ball_pos, gk_ball_vel, gk_trunk_pos, sim_time
+                )
+
+                gk_sensor_ang_vel = d.sensordata[gk_imu_adr:gk_imu_adr+3].copy().astype(np.float32)
+                gk_trunk_quat = d.sensor('gk_orientation').data.copy().astype(np.float32)
+                gk_current_qpos = d.qpos[gk_joint_qpos_indices].copy().astype(np.float32)
+                gk_current_qvel = d.qvel[gk_joint_qvel_indices].copy().astype(np.float32)
+
+                gk_cmd_13d = np.zeros(13, dtype=np.float32)
+                if gk_mode == "walk":
+                    gk_cmd_13d[0] = gk_vx
+                    gk_cmd_13d[1] = gk_vy
+                    gk_cmd_13d[2] = gk_vyaw
+
+                gk_target_qpos = gk_policy_runner.step(
+                    gk_mode, gk_sensor_ang_vel, gk_trunk_quat, gk_current_qpos, gk_current_qvel, gk_cmd_13d
+                )
+                d.ctrl[15:29] = gk_target_qpos
+
             for _ in range(10):
                 mujoco.mj_step(m, d)
                 evaluator.evaluate_step(d, trunk_base_id, ball_body_id, foot_site_id, metrics,
@@ -192,12 +239,15 @@ def main():
     parser.add_argument('--trace', action='store_true')
     parser.add_argument('--look-before-kick', action='store_true')
     parser.add_argument('--default-spawn', action='store_true', help='Use the GUI initial pose and ball placement')
+    parser.add_argument("--goalkeeper", action="store_true", help="Add Goalkeeper Microduck to defend the goal")
     args = parser.parse_args()
     if args.trials <= 0 or args.duration <= 0 or args.terminal_duration <= 0:
         parser.error("trials and durations must be positive")
 
     print("=" * 60)
     print(f"  🏁 Running Microduck Soccer Benchmark ({args.trials} Trials, {args.duration:.1f}s Max)")
+    if args.goalkeeper:
+        print("     [Mode: 1-on-1 vs Goalkeeper Duck (守门鸭)]")
     print("=" * 60)
 
     results = []
@@ -205,10 +255,20 @@ def main():
         print(f"Trial {i:2d}/{args.trials}... ", end="", flush=True)
         m = run_trial(i, max_duration=args.duration, seed=args.seed + i - 1, terminal_duration=args.terminal_duration,
                       controller=args.controller, trace=args.trace, default_spawn=args.default_spawn,
-                      look_before_kick=args.look_before_kick)
+                      look_before_kick=args.look_before_kick, goalkeeper=args.goalkeeper)
         results.append(m)
-        status = "GOAL ⚽" if m.goal_scored else ("KICKED 👟" if m.kick_contact else ("APPROACHED 🚶" if m.approach_success else "MISSED ❌"))
-        print(f"[{status}] Time: {m.total_time:.2f}s, Kick contact: {m.kick_contact}, Goal: {m.goal_scored}")
+        if m.shot_saved:
+            status = "SAVED 🧤"
+        elif m.goal_scored:
+            status = "GOAL ⚽"
+        elif m.kick_contact:
+            status = "KICKED 👟"
+        elif m.approach_success:
+            status = "APPROACHED 🚶"
+        else:
+            status = "MISSED ❌"
+        extra = f", GK Saved: {m.shot_saved}" if args.goalkeeper else ""
+        print(f"[{status}] Time: {m.total_time:.2f}s, Kick contact: {m.kick_contact}, Goal: {m.goal_scored}{extra}")
 
     n = len(results)
     det_rate = sum(1 for r in results if r.ball_detected) / n * 100.0
@@ -234,6 +294,13 @@ def main():
     print(f"  Goals with Kick Contact:   {kick_goal_rate:.1f}%")
     print(f"  Mean Time to Kick:          {mean_time_kick:.2f} s")
     print(f"  Fall Rate:                  {fall_rate:.1f}%")
+    if args.goalkeeper:
+        gk_contact_rate = sum(1 for r in results if r.gk_contact) / n * 100.0
+        gk_save_rate = sum(1 for r in results if r.shot_saved) / n * 100.0
+        clean_sheet_rate = sum(1 for r in results if not r.goal_scored) / n * 100.0
+        print(f"  Goalkeeper Contact Rate:    {gk_contact_rate:.1f}%")
+        print(f"  Goalkeeper Save Rate:       {gk_save_rate:.1f}%")
+        print(f"  Clean Sheet Rate (零封率):   {clean_sheet_rate:.1f}%")
     print("=" * 60)
 
     if args.output:
